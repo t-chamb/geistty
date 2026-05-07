@@ -6,7 +6,7 @@ Terminal fonts are critical to the user experience. This document covers Geistty
 
 ## Current State (v0.1-stable)
 
-### Bundled Fonts (8 families)
+### Bundled Fonts (9 families)
 
 | Font | License | Files | Notes |
 |------|---------|-------|-------|
@@ -18,6 +18,7 @@ Terminal fonts are critical to the user experience. This document covers Geistty
 | **IBM Plex Mono** | OFL 1.1 | `IBMPlexMono-Regular.ttf`, `-Bold.ttf` | IBM's monospace, distinctive character |
 | **Inconsolata** | OFL 1.1 | `Inconsolata-Regular.ttf`, `-Bold.ttf` | Lightweight, clean |
 | **Atkinson Hyperlegible Mono** | OFL 1.1 | `AtkinsonHyperlegibleMono-Regular.ttf`, `-Bold.ttf` | Designed for low vision readers, high character distinction |
+| **OpenDyslexic Nerd Font** | Bitstream Vera + CC BY 3.0 (base) / OFL 1.1 + MIT (Nerd Fonts patches) | `OpenDyslexicNerdFont-Regular.otf`, `-Bold.otf` | Dyslexia-friendly font with weighted letter bottoms and unique letterforms (b/d/p/q distinct). Patched with Nerd Fonts glyphs (Powerline, devicons, FontAwesome) for prompt themes like Starship and Powerlevel10k. |
 
 ### System Fonts (2)
 
@@ -49,6 +50,7 @@ Font name translation between GUI display names and CoreText/Ghostty identifiers
 "IBM Plex Mono"  -> "IBM Plex Mono"
 "Inconsolata"    -> "Inconsolata"
 "Atkinson Hyperlegible Mono" -> "Atkinson Hyperlegible Mono"
+"OpenDyslexic Nerd Font" -> "OpenDyslexic Nerd Font"
 "Menlo"          -> "Menlo"
 "Courier New"    -> "Courier New"
 ```
@@ -71,7 +73,7 @@ Essential for oh-my-zsh, Starship, Powerlevel10k prompts:
 |  | U+E0A1 | Line number |
 |  | U+E0A2 | Padlock |
 
-Users who need Powerline/Nerd Font symbols should install a patched font via iOS Settings or use one of the bundled fonts that includes glyph coverage.
+**OpenDyslexic Nerd Font** is the first bundled Nerd Font in Geistty — its `Regular` and `Bold` faces ship the full Nerd Fonts 3.4.0 glyph set, so prompts that depend on Powerline/devicons (Starship, Powerlevel10k, oh-my-posh) render correctly out of the box without requiring a separate iOS Settings → Fonts install. Users who prefer a non-Nerd-Font for the base text can still install a patched variant of any other bundled family via iOS Settings.
 
 ---
 
@@ -99,6 +101,7 @@ Ghostty doesn't currently support font cascading on iOS -- a symbols-only Nerd F
 | IBM Plex Mono | OFL 1.1 | In app credits |
 | Inconsolata | OFL 1.1 | In app credits |
 | Atkinson Hyperlegible Mono | OFL 1.1 | In app credits |
+| OpenDyslexic Nerd Font | Bitstream Vera + CC BY 3.0 (base) / OFL 1.1 + MIT (patches) | In app credits |
 
 **OFL 1.1 Requirements**: Include copyright notice, include license text, don't sell the font standalone, don't use reserved font names in derivatives.
 
@@ -114,4 +117,5 @@ Ghostty doesn't currently support font cascading on iOS -- a symbols-only Nerd F
 - **IBM Plex Mono**: https://github.com/IBM/plex
 - **Inconsolata**: https://levien.com/type/myfonts/inconsolata.html
 - **Atkinson Hyperlegible Mono**: https://brailleinstitute.org/freefont
+- **OpenDyslexic**: https://opendyslexic.org/ (and patched build at https://www.nerdfonts.com/)
 - **Nerd Fonts**: https://www.nerdfonts.com/

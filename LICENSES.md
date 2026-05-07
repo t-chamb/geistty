@@ -98,7 +98,7 @@ SOFTWARE.
 
 ## Fonts
 
-All fonts included in Geistty are licensed under the **SIL Open Font License, Version 1.1**, except Hack which uses the **MIT License**.
+Most fonts included in Geistty are licensed under the **SIL Open Font License, Version 1.1**. Exceptions: **Hack** uses the **MIT License**, and **OpenDyslexic Nerd Font** combines the **Bitstream Vera Sans Mono** base license with **Creative Commons Attribution 3.0 Unported** (the OpenDyslexic modifications) plus **Nerd Fonts** patches.
 
 ### Departure Mono
 - **Copyright**: © 2022–2024 Helena Zhang
@@ -134,6 +134,16 @@ All fonts included in Geistty are licensed under the **SIL Open Font License, Ve
 - **Copyright**: © 2020-2024 The Atkinson Hyperlegible Mono Project Authors
 - **Source**: https://brailleinstitute.org/freefont
 - **Repository**: https://github.com/googlefonts/atkinson-hyperlegible-next-mono
+
+### OpenDyslexic Nerd Font
+- **License**: Bitstream Vera Sans Mono base license + Creative Commons Attribution 3.0 Unported (Abelardo Gonzalez modifications) + MIT (Nerd Fonts patches; aggregated icon glyphs distributed under the original font's terms)
+- **Copyright**:
+  - © 2012 Abelardo Gonzalez (OpenDyslexic typeface modifications)
+  - © Bitstream Inc. (Bitstream Vera Sans Mono base shapes)
+  - © Nerd Fonts contributors (icon patches and build tooling)
+- **Source**: https://opendyslexic.org/ (typeface), https://www.nerdfonts.com/ (patched build, Nerd Fonts 3.4.0)
+
+> Per the OpenDyslexic license: *"Original Fonts are © Bitstream. OpenDyslexic changes and additional glyphs by Abelardo Gonzalez are licensed under a Creative Commons Attribution 3.0 Unported License. Based on a work at http://dyslexicfonts.com. 2012 by Abelardo Gonzalez."*
 
 ### SIL Open Font License, Version 1.1
 
@@ -241,3 +251,4 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 | IBM Plex Mono | SIL OFL 1.1 |
 | Inconsolata | SIL OFL 1.1 |
 | Atkinson Hyperlegible Mono | SIL OFL 1.1 |
+| OpenDyslexic Nerd Font | Bitstream + CC BY 3.0 (base) / MIT (Nerd Fonts patches) |

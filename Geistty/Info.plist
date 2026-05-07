@@ -19,6 +19,8 @@
 		<string>Inconsolata-Bold.ttf</string>
 		<string>AtkinsonHyperlegibleMono-Regular.ttf</string>
 		<string>AtkinsonHyperlegibleMono-Bold.ttf</string>
+		<string>OpenDyslexicNerdFont-Regular.otf</string>
+		<string>OpenDyslexicNerdFont-Bold.otf</string>
 	</array>
 	<key>UIRequiresFullScreen</key>
 	<false/>
