@@ -77,6 +77,125 @@ final class GeisttyUITests: XCTestCase {
         }
     }
 
+    /// Quick Connect form — exercises both entry points and the pre-flight
+    /// host validation added in the unified ConnectionFormFields refactor.
+    ///
+    /// Path A: home → "Quick Connect" → ConnectionSheet (idPrefix "Sheet")
+    /// Path B: home → "Saved Connections" → list → "Quick Connect" row →
+    ///         QuickConnectView (idPrefix "")
+    ///
+    /// Both paths render the same shared ConnectionFormFields, so this test
+    /// guards against the two flows silently drifting apart again.
+    func testQuickConnectForm() throws {
+        takeScreenshot(name: "QC-00-Home")
+
+        // ─────────────────────────────────────────────────────────────
+        // Path A: ConnectionSheet from home
+        // ─────────────────────────────────────────────────────────────
+        let homeQuickConnect = app.buttons["DisconnectedQuickConnectButton"]
+        XCTAssertTrue(homeQuickConnect.waitForExistence(timeout: 5),
+                      "DisconnectedQuickConnectButton should be on the home screen")
+        homeQuickConnect.tap()
+
+        // Sheet present + all shared fields rendered with the "Sheet" prefix.
+        let sheetHost = app.textFields["SheetHostField"]
+        let sheetPort = app.textFields["SheetPortField"]
+        let sheetUser = app.textFields["SheetUsernameField"]
+        let sheetPass = app.secureTextFields["SheetPasswordField"]
+        let sheetConnect = app.buttons["SheetConnectButton"]
+
+        XCTAssertTrue(sheetHost.waitForExistence(timeout: 3), "Sheet host field")
+        XCTAssertTrue(sheetPort.exists, "Sheet port field")
+        XCTAssertTrue(sheetUser.exists, "Sheet username field")
+        XCTAssertTrue(sheetPass.exists, "Sheet password field")
+        XCTAssertTrue(sheetConnect.exists, "Sheet connect button")
+
+        // Connect should be disabled with empty fields.
+        XCTAssertFalse(sheetConnect.isEnabled,
+                       "Connect must be disabled when host/username are empty")
+
+        takeScreenshot(name: "QC-01-Sheet-Empty")
+
+        // Type a deliberately bad host — this should trip the pre-flight
+        // hostWarning regex (catches scheme://) BEFORE any SSH round-trip.
+        sheetHost.tap()
+        sheetHost.typeText("ssh://example.com")
+
+        let warning = app.staticTexts.matching(identifier: "SheetHostWarning").firstMatch
+        XCTAssertTrue(warning.waitForExistence(timeout: 2),
+                      "Pre-flight warning should appear for 'ssh://' prefix")
+        XCTAssertFalse(sheetConnect.isEnabled,
+                       "Connect must stay disabled while host warning is active")
+
+        takeScreenshot(name: "QC-02-Sheet-Warning")
+
+        // Clear → type a valid host + username; warning goes away, button enables.
+        clear(sheetHost)
+        sheetHost.typeText("example.com")
+        sheetUser.tap()
+        sheetUser.typeText("alice")
+
+        XCTAssertFalse(warning.exists,
+                       "Pre-flight warning should clear once host is sane")
+        XCTAssertTrue(sheetConnect.isEnabled,
+                      "Connect should enable with valid host + username")
+
+        takeScreenshot(name: "QC-03-Sheet-Valid")
+
+        // Cancel back to home.
+        app.buttons["SheetCancelButton"].tap()
+        XCTAssertTrue(homeQuickConnect.waitForExistence(timeout: 3),
+                      "Should be back on the home screen after cancel")
+
+        // ─────────────────────────────────────────────────────────────
+        // Path B: QuickConnectView from the saved-connections list
+        // ─────────────────────────────────────────────────────────────
+        app.buttons["DisconnectedSavedConnectionsButton"].tap()
+
+        let listQuickConnect = app.buttons["QuickConnectButton"]
+        XCTAssertTrue(listQuickConnect.waitForExistence(timeout: 3),
+                      "List Quick Connect row should be present")
+        listQuickConnect.tap()
+
+        // Same shared fields, this time with empty idPrefix.
+        let listHost = app.textFields["HostField"]
+        let listUser = app.textFields["UsernameField"]
+        let listConnect = app.buttons["ConnectButton"]
+
+        XCTAssertTrue(listHost.waitForExistence(timeout: 3),
+                      "List host field with empty prefix")
+        XCTAssertTrue(listUser.exists, "List username field")
+        XCTAssertTrue(listConnect.exists, "List connect button")
+
+        // Pre-flight validation should behave identically — same shared
+        // ConnectionFormFields means same warning logic.
+        listHost.tap()
+        listHost.typeText("not a host")
+        let listWarning = app.staticTexts.matching(identifier: "HostWarning").firstMatch
+        XCTAssertTrue(listWarning.waitForExistence(timeout: 2),
+                      "Pre-flight warning should appear for spaces in host")
+        XCTAssertFalse(listConnect.isEnabled,
+                       "List Connect must be disabled while warning is active")
+
+        takeScreenshot(name: "QC-04-List-Warning")
+
+        // Cancel out cleanly.
+        app.buttons["QuickConnectCancelButton"].tap()
+        XCTAssertTrue(listQuickConnect.waitForExistence(timeout: 3),
+                      "Should be back on the connection list after cancel")
+    }
+
+    /// Helper: clear a text field by selecting all + deleting. iOS field
+    /// clearing is finicky (no API for "clear text"), this is the
+    /// XCTest-idiomatic workaround.
+    private func clear(_ field: XCUIElement) {
+        guard let value = field.value as? String, !value.isEmpty else { return }
+        field.tap()
+        // Triple-tap to select-all is unreliable; build a backspace string.
+        let deleteString = String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count)
+        field.typeText(deleteString)
+    }
+
     /// Settings → Keyboard Shortcuts navigation flow.
     /// Verifies the new SettingsView entry I added (KeyboardShortcutsLink)
     /// pushes the dedicated KeyboardShortcutsView with all expected shortcut
