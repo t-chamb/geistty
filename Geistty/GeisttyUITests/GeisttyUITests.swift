@@ -185,6 +185,72 @@ final class GeisttyUITests: XCTestCase {
                       "Should be back on the connection list after cancel")
     }
 
+    /// Reconnect-to-last button — exercises the highest-leverage UX change
+    /// from the home-screen overhaul (commit 1195eb0).
+    ///
+    /// Precondition: a saved profile with lastConnectedAt set must exist in
+    /// the app's UserDefaults BEFORE launch. The host-side seeding script
+    /// (tools/seed_recent_profile.py invoked by the test runner before this
+    /// test runs) writes a binary plist into the app container so
+    /// ConnectionProfileManager.shared.recents.first is non-nil.
+    ///
+    /// Without that pre-seed, this test will skip — there's no way to drive
+    /// a real SSH connection from a sandboxed XCUITest runner without
+    /// configured TestConfig credentials.
+    func testReconnectLastButton() throws {
+        let reconnect = app.buttons["DisconnectedReconnectLastButton"]
+        guard reconnect.waitForExistence(timeout: 5) else {
+            throw XCTSkip("DisconnectedReconnectLastButton not present — run tools/seed_recent_profile.py before invoking this test to pre-seed a recent profile")
+        }
+
+        takeScreenshot(name: "RC-01-Home-With-Reconnect")
+
+        // Label should be the two-line "Reconnect / user@host" composition.
+        // XCUIElement.label flattens VStack content into a single string.
+        XCTAssertTrue(reconnect.label.contains("Reconnect"),
+                      "Button label should include 'Reconnect': '\(reconnect.label)'")
+        XCTAssertTrue(reconnect.label.contains("demo@test.rebex.net"),
+                      "Button label should include user@host: '\(reconnect.label)'")
+
+        // Quick Connect should still exist (demoted to secondary, not removed).
+        XCTAssertTrue(app.buttons["DisconnectedQuickConnectButton"].exists,
+                      "Quick Connect should remain as the secondary CTA")
+
+        // Saved Connections count badge should read "1" (the seeded profile).
+        XCTAssertTrue(app.staticTexts["1 saved"].exists,
+                      "Saved Connections badge should announce '1 saved' for the seeded profile")
+
+        reconnect.tap()
+
+        // After tap: connectionStatus = .connecting → TerminalContainerView
+        // mounts. The home chrome (Reconnect button, settings gear) should
+        // unmount. The actual SSH attempt to test.rebex.net (with the
+        // synthesized 'demo' password injected from the seed plist) will
+        // fail downstream — and may crash the app due to a pre-existing
+        // bug in the SSH session error path. That crash is NOT what this
+        // test verifies; we only verify the UX wire-up (home unmounts on
+        // .connecting transition).
+        //
+        // Use a polled exists() check rather than waitForNonExistence so
+        // we can break out the moment the app dies or the home unmounts.
+        let deadline = Date().addingTimeInterval(5)
+        while reconnect.exists && app.state == .runningForeground && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertFalse(reconnect.exists,
+                       "Reconnect button should disappear after tapping (state → .connecting or app handed control to terminal/error chrome)")
+
+        // Device-level screenshot survives the case where the app has
+        // already crashed mid-transition; XCUIApplication.screenshot()
+        // would throw "Element Target Application cannot request
+        // screenshot data because it does not exist".
+        let deviceShot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: deviceShot)
+        attachment.name = "RC-02-After-Tap"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// Helper: clear a text field by selecting all + deleting. iOS field
     /// clearing is finicky (no API for "clear text"), this is the
     /// XCTest-idiomatic workaround.
