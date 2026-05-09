@@ -127,48 +127,83 @@ final class ConnectionEditorTests: XCTestCase {
     }
 
     /// tmux toggle exists and reveals session name field when enabled.
+    /// Updated for the DisclosureGroup wrapper added in the UX overhaul:
+    /// the tmux toggle now lives behind an "Advanced — tmux" disclosure
+    /// that starts collapsed for new profiles, so the test must expand
+    /// the disclosure before the toggle becomes hittable.
     func testTmuxToggle() throws {
-        // The tmux section is near the bottom of a long form.
-        // Scroll until the toggle is visible and hittable.
+        // Step 1: scroll the disclosure header into view and tap it to expand.
+        let disclosure = app.buttons["TmuxDisclosure"]
+        scrollUntilHittable(disclosure)
+        XCTAssertTrue(disclosure.isHittable, "TmuxDisclosure should be hittable")
+        disclosure.tap()
+
+        // Step 2: now the toggle is in the hierarchy. Wait + tap it.
         let tmuxToggle = app.switches["TmuxToggle"]
-
-        // Use gentle scrolls to bring the toggle into the hittable area
-        var attempts = 0
-        while attempts < 10 {
-            if tmuxToggle.exists && tmuxToggle.isHittable {
-                break
-            }
-            // Gentle scroll: drag from center-bottom to center-top
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-            start.press(forDuration: 0.1, thenDragTo: end)
-            attempts += 1
-        }
-
-        XCTAssertTrue(tmuxToggle.exists, "TmuxToggle should exist")
-        XCTAssertTrue(tmuxToggle.isHittable, "TmuxToggle should be hittable")
-
-        // Tap the switch directly via its coordinate to ensure we hit it
+        XCTAssertTrue(tmuxToggle.waitForExistence(timeout: 3),
+                      "TmuxToggle should appear after expanding disclosure")
+        scrollUntilHittable(tmuxToggle)
         tmuxToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-
-        // Wait for the UI to update after toggle
         Thread.sleep(forTimeInterval: 0.5)
 
-        // Verify the toggle is now ON
         XCTAssertEqual(tmuxToggle.value as? String, "1",
                        "TmuxToggle should be enabled after tap")
 
-        // Scroll down to reveal the session name field
-        let start2 = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-        let end2 = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-        start2.press(forDuration: 0.1, thenDragTo: end2)
-
-        // Session name field should appear
+        // Step 3: session name field should appear after toggle is on.
         let sessionField = app.textFields["TmuxSessionNameField"]
         XCTAssertTrue(sessionField.waitForExistence(timeout: 5),
                       "TmuxSessionNameField should appear when tmux is enabled")
 
         takeScreenshot(app, name: "Editor-07-TmuxEnabled")
+    }
+
+    /// New: verify the DisclosureGroup wrapper behavior itself.
+    /// - Disclosure header is present
+    /// - Toggle + session name field are NOT in the hierarchy when collapsed
+    /// - Both appear after tapping the disclosure
+    /// - Disclosure stays collapsed by default for new profiles (regression
+    ///   guard: an earlier draft accidentally auto-expanded for everyone)
+    func testTmuxDisclosureCollapsedByDefault() throws {
+        let disclosure = app.buttons["TmuxDisclosure"]
+        scrollUntilHittable(disclosure)
+
+        // Collapsed precondition: toggle should NOT exist in the hierarchy
+        // yet, because DisclosureGroup unmounts its content while collapsed.
+        let tmuxToggle = app.switches["TmuxToggle"]
+        XCTAssertFalse(tmuxToggle.exists,
+                       "TmuxToggle should not exist while disclosure is collapsed (new profile)")
+
+        takeScreenshot(app, name: "Editor-Tmux-01-Collapsed")
+
+        // Tap to expand
+        disclosure.tap()
+        XCTAssertTrue(tmuxToggle.waitForExistence(timeout: 3),
+                      "TmuxToggle should appear after tapping disclosure")
+
+        takeScreenshot(app, name: "Editor-Tmux-02-Expanded")
+
+        // Tap again to collapse — toggle should disappear from hierarchy.
+        disclosure.tap()
+        // Allow SwiftUI a moment to unmount.
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertFalse(tmuxToggle.exists,
+                       "TmuxToggle should disappear after tapping disclosure to collapse")
+
+        takeScreenshot(app, name: "Editor-Tmux-03-Recollapsed")
+    }
+
+    /// Helper: drag-scroll the form until the given element is hittable.
+    /// Used by both testTmuxToggle and testTmuxDisclosureCollapsedByDefault
+    /// since the editor is a long form on iPhone and most tmux-related
+    /// elements live below the fold.
+    private func scrollUntilHittable(_ element: XCUIElement, maxAttempts: Int = 10) {
+        var attempts = 0
+        while attempts < maxAttempts && !(element.exists && element.isHittable) {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            start.press(forDuration: 0.1, thenDragTo: end)
+            attempts += 1
+        }
     }
 
     // MARK: - Cancel
