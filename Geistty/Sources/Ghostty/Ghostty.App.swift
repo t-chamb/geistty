@@ -105,6 +105,9 @@ extension Ghostty {
                 },
                 read_clipboard_cb: { userdata, location, state in
                     App.readClipboard(userdata, location: location, state: state)
+                    // Return false: read is dispatched async to the main queue
+                    // and completed via ghostty_surface_complete_clipboard_request.
+                    return false
                 },
                 confirm_read_clipboard_cb: { userdata, str, state, request in
                     App.confirmReadClipboard(userdata, string: str, state: state, request: request)
