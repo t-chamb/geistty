@@ -107,15 +107,17 @@ struct SettingsView: View {
                     .accessibilityIdentifier("ThemePickerLink")
                 }
                 
-                // Cursor Style
+                // Cursor Style — visual preview of each shape next to its
+                // label, so users can see what "block / bar / underline"
+                // looks like without having to flip back to a terminal.
                 Section {
                     HStack {
                         Text("Cursor")
                         Spacer()
                         Picker("", selection: $settings.cursorStyle) {
-                            Text("Block").tag("block")
-                            Text("Bar").tag("bar")
-                            Text("Underline").tag("underline")
+                            CursorStylePreview(shape: "block").tag("block")
+                            CursorStylePreview(shape: "bar").tag("bar")
+                            CursorStylePreview(shape: "underline").tag("underline")
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 200)
@@ -242,6 +244,23 @@ struct SettingsView: View {
                     Text("Advanced: Edit the Ghostty config file directly. Changes apply on next connection.")
                 }
                 
+                // Keyboard Shortcuts — surfaces the hardware-keyboard
+                // bindings (showQuickConnect, showSettings, etc.) that the
+                // notification handlers expose. Without this link, iPad
+                // users with a Magic Keyboard had no way to discover them.
+                Section {
+                    NavigationLink {
+                        KeyboardShortcutsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "keyboard")
+                                .foregroundStyle(.blue)
+                            Text("Keyboard Shortcuts")
+                        }
+                    }
+                    .accessibilityIdentifier("KeyboardShortcutsLink")
+                }
+
                 // About
                 Section("About") {
                     HStack {
@@ -790,6 +809,120 @@ struct HighlightedConfigEditor: UIViewRepresentable {
             highlightWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         }
+    }
+}
+
+// MARK: - Cursor Style Preview
+
+/// Tiny rendered glyph next to each segmented-picker option so users can see
+/// what "block / bar / underline" looks like without flipping back to a
+/// terminal session. Uses a faux capital "I" outline plus the cursor shape
+/// in the foreground tint to mimic the actual terminal rendering.
+struct CursorStylePreview: View {
+    let shape: String
+
+    var body: some View {
+        ZStack {
+            // Faint character outline in background — gives the cursor
+            // shape something to relate to instead of floating in space.
+            Text("A")
+                .font(.system(size: 16, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary.opacity(0.4))
+
+            cursorShape
+                .foregroundStyle(.tint)
+        }
+        .frame(width: 28, height: 22)
+    }
+
+    @ViewBuilder
+    private var cursorShape: some View {
+        switch shape {
+        case "block":
+            Rectangle()
+                .frame(width: 12, height: 16)
+                .opacity(0.55)
+        case "bar":
+            Rectangle()
+                .frame(width: 2, height: 16)
+        case "underline":
+            Rectangle()
+                .frame(width: 12, height: 2)
+                .offset(y: 8)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+// MARK: - Keyboard Shortcuts
+
+/// Reference list of hardware-keyboard shortcuts. Mirrors the notification
+/// names that ContentView observes so any new shortcut added to the app
+/// shows up here. Pure documentation — no live bindings, since the actual
+/// UIKeyCommand wiring happens in the responder chain elsewhere.
+struct KeyboardShortcutsView: View {
+    private struct Shortcut: Identifiable {
+        let id = UUID()
+        let combo: String
+        let label: String
+        let symbol: String
+    }
+
+    private let shortcuts: [(category: String, items: [Shortcut])] = [
+        ("Connection", [
+            .init(combo: "⌘N", label: "New Connection", symbol: "plus.circle"),
+            .init(combo: "⌘⇧N", label: "Quick Connect", symbol: "bolt.fill"),
+            .init(combo: "⌘L", label: "Saved Connections", symbol: "list.bullet"),
+            .init(combo: "⌘D", label: "Disconnect Current Session", symbol: "xmark.circle"),
+            .init(combo: "⌘R", label: "Reconnect", symbol: "arrow.clockwise"),
+        ]),
+        ("App", [
+            .init(combo: "⌘,", label: "Settings", symbol: "gearshape"),
+            .init(combo: "⌘K", label: "SSH Key Manager", symbol: "key.fill"),
+        ]),
+        ("Terminal", [
+            .init(combo: "⌘C", label: "Copy Selection", symbol: "doc.on.doc"),
+            .init(combo: "⌘V", label: "Paste", symbol: "doc.on.clipboard"),
+            .init(combo: "⌘F", label: "Search Buffer", symbol: "magnifyingglass"),
+            .init(combo: "⌘+ / ⌘-", label: "Font Size Larger / Smaller", symbol: "textformat.size"),
+            .init(combo: "⌘U", label: "Toggle Background Translucency", symbol: "rectangle.stack"),
+        ]),
+    ]
+
+    var body: some View {
+        List {
+            ForEach(Array(shortcuts.enumerated()), id: \.offset) { index, section in
+                Section {
+                    ForEach(section.items) { item in
+                        HStack {
+                            Image(systemName: item.symbol)
+                                .frame(width: 22)
+                                .foregroundStyle(.secondary)
+                            Text(item.label)
+                            Spacer()
+                            Text(item.combo)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(item.label), \(item.combo)")
+                    }
+                } header: {
+                    Text(section.category)
+                } footer: {
+                    // Attach the global footer to the last section so it
+                    // renders inside the inset-grouped list rather than
+                    // floating outside.
+                    if index == shortcuts.count - 1 {
+                        Text("Available with a hardware keyboard (Magic Keyboard, Smart Keyboard Folio, or any Bluetooth keyboard).")
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Keyboard Shortcuts")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

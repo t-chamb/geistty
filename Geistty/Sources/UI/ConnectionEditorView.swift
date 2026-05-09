@@ -28,6 +28,10 @@ struct ConnectionEditorView: View {
     @State private var isFavorite = false
     @State private var useTmux = false
     @State private var tmuxSessionName = ""
+    /// Tmux section starts collapsed; auto-expanded in loadProfile() when an
+    /// existing profile already has tmux on so users don't lose visibility
+    /// of their current setting.
+    @State private var tmuxSectionExpanded = false
     
     // Key import
     @State private var showingKeyImport = false
@@ -195,28 +199,33 @@ struct ConnectionEditorView: View {
                     .accessibilityIdentifier("FavoriteToggle")
             }
             
-            // tmux Integration
+            // tmux Integration — collapsed by default. Most users never use
+            // tmux; surfacing the toggle inline competed with the more
+            // common Favorite toggle above.
             Section {
-                Toggle("Auto-attach to tmux", isOn: $useTmux)
-                    .accessibilityIdentifier("TmuxToggle")
-                
-                if useTmux {
-                    TextField("Session Name", text: $tmuxSessionName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .focused($focusedField, equals: .tmuxSession)
-                        .submitLabel(.done)
-                        .onSubmit { focusedField = nil }
-                        .accessibilityIdentifier("TmuxSessionNameField")
-                        .accessibilityLabel("tmux session name")
-                }
-            } header: {
-                Text("tmux")
-            } footer: {
-                if useTmux {
-                    Text("Automatically attach to or create a tmux session on connect. Leave session name empty to use \"main\".")
-                } else {
-                    Text("Enable to automatically start or attach to a tmux session.")
+                DisclosureGroup(isExpanded: $tmuxSectionExpanded) {
+                    Toggle("Auto-attach to tmux", isOn: $useTmux)
+                        .accessibilityIdentifier("TmuxToggle")
+
+                    if useTmux {
+                        TextField("Session Name", text: $tmuxSessionName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .tmuxSession)
+                            .submitLabel(.done)
+                            .onSubmit { focusedField = nil }
+                            .accessibilityIdentifier("TmuxSessionNameField")
+                            .accessibilityLabel("tmux session name")
+                    }
+
+                    Text(useTmux
+                        ? "Attach to or create a tmux session on connect. Leave name empty for \"main\"."
+                        : "Enable to automatically start or attach to a tmux session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Label("Advanced — tmux", systemImage: "rectangle.split.3x1")
+                        .accessibilityIdentifier("TmuxDisclosure")
                 }
             }
             
@@ -329,6 +338,9 @@ struct ConnectionEditorView: View {
         isFavorite = profile.isFavorite
         useTmux = profile.useTmux
         tmuxSessionName = profile.tmuxSessionName ?? ""
+        // Auto-expand the Advanced/tmux disclosure if this profile already
+        // uses tmux, so the user sees their existing setting on entry.
+        tmuxSectionExpanded = profile.useTmux
         // Load saved password from keychain if using password auth
         if profile.authMethod == .password {
             if let savedPassword = try? KeychainManager.shared.getPassword(

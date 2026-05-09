@@ -44,6 +44,7 @@ struct WindowContentView: View {
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var profileManager = ConnectionProfileManager.shared
     @State private var showConnectionSheet = false
     @State private var showConnectionList = false
     @State private var showSettings = false
@@ -72,7 +73,10 @@ struct ContentView: View {
                             DisconnectedView(
                                 showConnectionSheet: $showConnectionSheet,
                                 showConnectionList: $showConnectionList,
-                                backgroundColor: themeBackground
+                                backgroundColor: themeBackground,
+                                lastProfile: profileManager.recents.first,
+                                savedCount: profileManager.profiles.count,
+                                onReconnectLast: reconnectLast
                             )
                         case .connecting, .connected:
                             // Both handled by outer `if` — required for exhaustiveness
@@ -88,34 +92,17 @@ struct ContentView: View {
                     }
                     .navigationTitle("Geistty")
                     .toolbar {
-                        ToolbarItem(placement: .navigationBarLeading) {
+                        // Settings on the trailing edge — matches iOS convention
+                        // (top-left is reserved for back/cancel). The disconnected
+                        // home has its own large-button CTAs, so the previous
+                        // top-right `+` Menu was redundant and has been removed.
+                        ToolbarItem(placement: .primaryAction) {
                             Button {
                                 showSettings = true
                             } label: {
                                 Image(systemName: "gearshape")
                             }
                             .accessibilityIdentifier("SettingsButton")
-                        }
-                        
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu {
-                                Button {
-                                    showConnectionSheet = true
-                                } label: {
-                                    Label("Quick Connect", systemImage: "bolt.fill")
-                                }
-                                .accessibilityIdentifier("ConnectionMenuQuickConnect")
-                                
-                                Button {
-                                    showConnectionList = true
-                                } label: {
-                                    Label("Saved Connections", systemImage: "list.bullet")
-                                }
-                                .accessibilityIdentifier("ConnectionMenuSavedConnections")
-                            } label: {
-                                Image(systemName: "plus.circle")
-                            }
-                            .accessibilityIdentifier("ConnectionMenu")
                         }
                     }
                 }
@@ -134,10 +121,10 @@ struct ContentView: View {
                 }
             }
         }
-        // Disable ALL animations on state transitions to prevent flash
-        .transaction { transaction in
-            transaction.animation = nil
-        }
+        // The terminal-fullscreen ↔ NavigationStack handoff produces a
+        // visible chrome flash if animated. Only kill animations on that
+        // specific transition; leave other state changes (sheet
+        // present/dismiss, error → reconnect) free to animate normally.
         .animation(nil, value: appState.connectionStatus)
         // Handle navigation notifications from menu bar.
         // H13 fix: Guard on scenePhase == .active to prevent inactive/background
@@ -229,11 +216,35 @@ struct ContentView: View {
         Task {
             await session.attemptReconnect()
             // If reconnect failed and we're still in .connecting, transition
-            // to error. If it succeeded, setupConnection() already set .connected.
+            // to error. Surface the underlying SSH error rather than a generic
+            // "Reconnect failed" so users can distinguish auth, host-down,
+            // network failure, etc.
             if session.state == .disconnected && appState.connectionStatus == .connecting {
-                appState.connectionStatus = .error("Reconnect failed")
+                let detail = session.lastError?.localizedDescription
+                    ?? "Network unreachable or host did not respond"
+                appState.connectionStatus = .error("Reconnect failed: \(detail)")
             }
         }
+    }
+
+    /// One-tap reconnect to the most recent saved profile from the home screen.
+    /// Reuses the connecting/error pipeline by populating connection params and
+    /// flipping `connectionStatus = .connecting`; TerminalContainerView mounts
+    /// and runs the SSH handshake. Password resolution falls to the keychain
+    /// path that powers ConnectionListView's row tap.
+    private func reconnectLast(_ profile: ConnectionProfile) {
+        let resolvedPassword = (try? KeychainManager.shared.getPassword(
+            for: profile.host,
+            username: profile.username
+        )) ?? ""
+        appState.setConnectionParams(
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            password: resolvedPassword
+        )
+        appState.connectionStatus = .connecting
+        ConnectionProfileManager.shared.markConnected(profile)
     }
 }
 
@@ -243,33 +254,87 @@ struct DisconnectedView: View {
     @Binding var showConnectionSheet: Bool
     @Binding var showConnectionList: Bool
     let backgroundColor: Color
-    
+    /// Most recent saved profile, used to power the one-tap "Reconnect" CTA.
+    let lastProfile: ConnectionProfile?
+    /// Total saved profile count — surfaced as a badge so users can see at a
+    /// glance whether the saved list is populated without entering it.
+    let savedCount: Int
+    let onReconnectLast: (ConnectionProfile) -> Void
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "terminal")
                 .font(.system(size: 80))
                 .foregroundStyle(.secondary)
-            
+
             Text("No Active Connection")
                 .font(.title2)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("DisconnectedTitle")
-            
+
             VStack(spacing: 12) {
-                Button {
-                    showConnectionSheet = true
-                } label: {
-                    Label("Quick Connect", systemImage: "bolt.fill")
-                        .frame(maxWidth: 200)
+                // Highest-leverage action: reconnect to the last-used host.
+                // Only shown when we have a recent profile to reconnect to.
+                if let last = lastProfile {
+                    Button {
+                        onReconnectLast(last)
+                    } label: {
+                        Label {
+                            VStack(spacing: 2) {
+                                Text("Reconnect")
+                                    .font(.body.weight(.semibold))
+                                Text(connectionLabel(for: last))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .frame(maxWidth: 220)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("DisconnectedReconnectLastButton")
                 }
-                .buttonStyle(.borderedProminent)
+
+                // Quick Connect is the primary CTA when there's no recent
+                // profile to reconnect to; demoted to secondary when one
+                // exists (Reconnect outranks it).
+                Group {
+                    if lastProfile == nil {
+                        Button {
+                            showConnectionSheet = true
+                        } label: {
+                            Label("Quick Connect", systemImage: "bolt.fill")
+                                .frame(maxWidth: 200)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button {
+                            showConnectionSheet = true
+                        } label: {
+                            Label("Quick Connect", systemImage: "bolt.fill")
+                                .frame(maxWidth: 200)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
                 .accessibilityIdentifier("DisconnectedQuickConnectButton")
-                
+
                 Button {
                     showConnectionList = true
                 } label: {
-                    Label("Saved Connections", systemImage: "list.bullet")
-                        .frame(maxWidth: 200)
+                    HStack(spacing: 6) {
+                        Label("Saved Connections", systemImage: "list.bullet")
+                        if savedCount > 0 {
+                            Text("\(savedCount)")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.2), in: Capsule())
+                                .accessibilityLabel("\(savedCount) saved")
+                        }
+                    }
+                    .frame(maxWidth: 200)
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("DisconnectedSavedConnectionsButton")
@@ -278,6 +343,13 @@ struct DisconnectedView: View {
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(backgroundColor)
+    }
+
+    private func connectionLabel(for profile: ConnectionProfile) -> String {
+        if profile.port == 22 {
+            return "\(profile.username)@\(profile.host)"
+        }
+        return "\(profile.username)@\(profile.host):\(profile.port)"
     }
 }
 
@@ -380,68 +452,138 @@ struct ErrorView: View {
 // MARK: - Connection Sheet
 
 struct ConnectionInfo {
-    #if DEBUG
-    var host: String = "test.rebex.net"  // Default test server
-    var username: String = "demo"
-    var password: String = "password"
-    #else
+    // Defaults are intentionally empty in all builds. The DEBUG-only
+    // "Use test.rebex.net" button in ConnectionSheet populates the test
+    // credentials on tap when needed; pre-filling fields obscured the
+    // empty-state and surfaced demo creds in dev screenshots / TestFlight.
     var host: String = ""
     var username: String = ""
     var password: String = ""
-    #endif
     var port: Int = 22
+}
+
+/// Reusable Host/Port/Username/Password form fields with field-level pre-flight
+/// validation. Used by both ConnectionSheet (lightweight one-shot) and
+/// ConnectionListView.QuickConnectView (one-shot + save-to-profiles).
+/// The two wrappers diverge in their action surface (just collect-and-dispatch
+/// vs. connect-and-save), but the field UI is identical and lives here.
+struct ConnectionFormFields: View {
+    @Binding var host: String
+    @Binding var port: String
+    @Binding var username: String
+    @Binding var password: String
+    /// Prefix for accessibility identifiers so the two wrappers can be
+    /// distinguished in UI tests (e.g. "Sheet" → "SheetHostField").
+    let idPrefix: String
+
+    var body: some View {
+        Section("Server") {
+            TextField("Host", text: $host)
+                .textContentType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .accessibilityIdentifier("\(idPrefix)HostField")
+
+            HStack {
+                Text("Port")
+                Spacer()
+                TextField("22", text: $port)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 80)
+                    .accessibilityIdentifier("\(idPrefix)PortField")
+            }
+        }
+
+        Section("Authentication") {
+            TextField("Username", text: $username)
+                .textContentType(.username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("\(idPrefix)UsernameField")
+
+            SecureField("Password", text: $password)
+                .textContentType(.password)
+                .accessibilityIdentifier("\(idPrefix)PasswordField")
+        }
+
+        // Pre-flight feedback — surfaces obvious typos (spaces, scheme prefix)
+        // before the user wastes a round-trip to the SSH layer.
+        if let warning = ConnectionFormFields.hostWarning(host) {
+            Section {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+                    .accessibilityIdentifier("\(idPrefix)HostWarning")
+            }
+        }
+    }
+
+    /// Cheap structural sanity check on a hostname/IP. Catches obvious user
+    /// errors (URL scheme, embedded spaces, slash-paths) without trying to
+    /// validate DNS. Returns nil for any plausibly-valid host.
+    static func hostWarning(_ host: String) -> String? {
+        let trimmed = host.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return nil } // Connect button handles emptiness
+        if trimmed != host { return "Host has leading/trailing whitespace" }
+        if host.contains(" ") { return "Host can't contain spaces" }
+        if host.contains("://") { return "Host should not include 'ssh://' or any scheme" }
+        if host.contains("/") { return "Host should not include a path" }
+        if host.hasPrefix("@") || host.contains("@") { return "Use the Username field instead of user@host" }
+        return nil
+    }
+
+    /// Combined validity check — host is non-empty + structurally sane,
+    /// username non-empty, port in [1, 65535].
+    static func isValid(host: String, port: String, username: String) -> Bool {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, !username.isEmpty else { return false }
+        guard let p = Int(port), (1...65535).contains(p) else { return false }
+        return hostWarning(h) == nil
+    }
 }
 
 struct ConnectionSheet: View {
     @Binding var connectionInfo: ConnectionInfo
     let onConnect: () -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
+    /// Local string binding for port so the field surface matches the
+    /// shared ConnectionFormFields. Synced back to connectionInfo.port on
+    /// change for downstream consumers that read the int.
+    @State private var portText: String = "22"
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server") {
-                    TextField("Host", text: $connectionInfo.host)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .accessibilityIdentifier("SheetHostField")
-                    
-                    HStack {
-                        Text("Port")
-                        Spacer()
-                        TextField("22", value: $connectionInfo.port, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                    }
-                    .accessibilityIdentifier("SheetPortField")
-                }
-                
-                Section("Authentication") {
-                    TextField("Username", text: $connectionInfo.username)
-                        .textContentType(.username)
-                        .textInputAutocapitalization(.never)
-                        .accessibilityIdentifier("SheetUsernameField")
-                    
-                    SecureField("Password", text: $connectionInfo.password)
-                        .textContentType(.password)
-                        .accessibilityIdentifier("SheetPasswordField")
-                }
-                
+                ConnectionFormFields(
+                    host: $connectionInfo.host,
+                    port: $portText,
+                    username: $connectionInfo.username,
+                    password: $connectionInfo.password,
+                    idPrefix: "Sheet"
+                )
+
                 Section {
                     Button("Connect") {
+                        connectionInfo.port = Int(portText) ?? 22
                         onConnect()
                     }
-                    .disabled(!isValid)
+                    .disabled(!ConnectionFormFields.isValid(
+                        host: connectionInfo.host,
+                        port: portText,
+                        username: connectionInfo.username
+                    ))
                     .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("SheetConnectButton")
                 }
-                
+
                 #if DEBUG
                 Section("Test Servers") {
                     Button("Use test.rebex.net") {
                         connectionInfo.host = "test.rebex.net"
+                        portText = "22"
                         connectionInfo.port = 22
                         connectionInfo.username = "demo"
                         connectionInfo.password = "password"
@@ -460,13 +602,8 @@ struct ConnectionSheet: View {
                     .accessibilityIdentifier("SheetCancelButton")
                 }
             }
+            .onAppear { portText = String(connectionInfo.port) }
         }
-    }
-    
-    private var isValid: Bool {
-        !connectionInfo.host.isEmpty &&
-        !connectionInfo.username.isEmpty &&
-        connectionInfo.port >= 1 && connectionInfo.port <= 65535
     }
 }
 

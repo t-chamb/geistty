@@ -425,39 +425,25 @@ struct QuickConnectView: View {
     
     var body: some View {
         Form {
-            Section("Server") {
-                TextField("Host", text: $host)
-                    .textContentType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .accessibilityIdentifier("HostField")
-                
-                TextField("Port", text: $port)
-                    .keyboardType(.numberPad)
-                    .accessibilityIdentifier("PortField")
-            }
-            
+            // Shared form fields with pre-flight host validation, identical
+            // to ContentView's ConnectionSheet so users see the same UX
+            // regardless of entry point.
+            ConnectionFormFields(
+                host: $host,
+                port: $port,
+                username: $username,
+                password: $password,
+                idPrefix: ""
+            )
+
             Section {
-                TextField("Username", text: $username)
-                    .textContentType(.username)
-                    .textInputAutocapitalization(.never)
-                    .accessibilityIdentifier("UsernameField")
-                
-                SecureField("Password", text: $password)
-                    .textContentType(.password)
-                    .accessibilityIdentifier("PasswordField")
-            } header: {
-                Text("Authentication")
+                Toggle("Save connection", isOn: $saveConnection)
+                    .accessibilityIdentifier("SaveConnectionToggle")
             } footer: {
                 Text("For SSH key authentication, create a saved connection instead.")
                     .font(.caption)
             }
-            
-            Section {
-                Toggle("Save connection", isOn: $saveConnection)
-                    .accessibilityIdentifier("SaveConnectionToggle")
-            }
-            
+
             if let error = errorMessage {
                 Section {
                     Text(error)
@@ -475,7 +461,7 @@ struct QuickConnectView: View {
                 }
                 .accessibilityIdentifier("QuickConnectCancelButton")
             }
-            
+
             ToolbarItem(placement: .confirmationAction) {
                 Button {
                     connect()
@@ -491,9 +477,9 @@ struct QuickConnectView: View {
             }
         }
     }
-    
+
     private var isValid: Bool {
-        !host.isEmpty && !username.isEmpty && (Int(port) ?? 0) > 0 && (Int(port) ?? 0) <= 65535
+        ConnectionFormFields.isValid(host: host, port: port, username: username)
     }
     
     private func connect() {
