@@ -76,6 +76,54 @@ final class GeisttyUITests: XCTestCase {
             userField.typeText("testuser")
         }
     }
+
+    /// Settings → Keyboard Shortcuts navigation flow.
+    /// Verifies the new SettingsView entry I added (KeyboardShortcutsLink)
+    /// pushes the dedicated KeyboardShortcutsView with all expected shortcut
+    /// rows. Captures screenshots at each step for visual confirmation.
+    func testSettingsKeyboardShortcutsFlow() throws {
+        takeScreenshot(name: "KS-00-Home")
+
+        // Top-right gear (post-UX-overhaul). Wait + tap.
+        let settings = app.buttons["SettingsButton"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5),
+                      "Settings gear should be present in toolbar")
+        settings.tap()
+
+        takeScreenshot(name: "KS-01-Settings-Open")
+
+        // Keyboard Shortcuts link is below Theme/Cursor/Font/etc; scroll the
+        // settings list until the link comes into hit-testable view.
+        let link = app.buttons["KeyboardShortcutsLink"]
+        let listView = app.collectionViews.firstMatch
+        var scrolls = 0
+        while !link.isHittable && scrolls < 10 {
+            listView.swipeUp()
+            scrolls += 1
+        }
+        XCTAssertTrue(link.isHittable,
+                      "KeyboardShortcutsLink should become hittable after scrolling")
+        link.tap()
+
+        takeScreenshot(name: "KS-02-Shortcuts-View")
+
+        // Verify representative rows from each category render.
+        let nav = app.navigationBars["Keyboard Shortcuts"]
+        XCTAssertTrue(nav.waitForExistence(timeout: 3),
+                      "Keyboard Shortcuts nav title should appear")
+
+        let connectionRow = app.staticTexts["New Connection"]
+        let appRow = app.staticTexts["Settings"]
+        let terminalRow = app.staticTexts["Copy Selection"]
+        XCTAssertTrue(connectionRow.exists, "Connection-category shortcut row")
+        XCTAssertTrue(appRow.exists, "App-category shortcut row")
+        XCTAssertTrue(terminalRow.exists, "Terminal-category shortcut row")
+
+        // Combo column rendered in monospace; verify at least one combo
+        // string is present so we know the layout reached the trailing label.
+        XCTAssertTrue(app.staticTexts["⌘N"].exists,
+                      "⌘N combo should render in trailing column")
+    }
 }
 
 // MARK: - Terminal Tests
