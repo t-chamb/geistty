@@ -85,6 +85,14 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     /// Off by default — opt-in for security.
     var forwardAgent: Bool
 
+    /// Use Mosh (Mobile Shell) for the session — survives sleep, network
+    /// changes, and roaming. Bootstraps via SSH (runs `mosh-server new`
+    /// on the remote, parses the response for port + AES-128 key), then
+    /// switches to UDP datagrams encrypted with AES-128-OCB. Requires the
+    /// `mosh-server` binary to be installed on the remote (`apt install mosh`,
+    /// `brew install mosh`, etc.).
+    var useMosh: Bool
+
     /// Stable list of color tag identifiers. Used by the Color Tag picker
     /// in ConnectionEditorView and the row chip in ConnectionListView.
     static let allColorTags: [String] = [
@@ -119,6 +127,7 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         self.colorTag = nil
         self.folder = nil
         self.forwardAgent = false
+        self.useMosh = false
     }
 
     // Custom coding keys to handle migration from old profiles missing newer fields.
@@ -126,7 +135,7 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         case id, name, host, port, username, authMethod, sshKeyName
         case useTmux, tmuxSessionName, enableFilesIntegration
         case createdAt, lastConnectedAt, isFavorite, colorTag
-        case folder, forwardAgent
+        case folder, forwardAgent, useMosh
     }
 
     init(from decoder: Decoder) throws {
@@ -148,6 +157,7 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         colorTag = try container.decodeIfPresent(String.self, forKey: .colorTag)
         folder = try container.decodeIfPresent(String.self, forKey: .folder)
         forwardAgent = try container.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
+        useMosh = try container.decodeIfPresent(Bool.self, forKey: .useMosh) ?? false
     }
     
     /// Display string for the connection

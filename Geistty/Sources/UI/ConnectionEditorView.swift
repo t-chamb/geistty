@@ -39,6 +39,7 @@ struct ConnectionEditorView: View {
 
     // SSH options
     @State private var forwardAgent: Bool = false
+    @State private var useMosh: Bool = false
 
     @ObservedObject private var profileManager = ConnectionProfileManager.shared
     
@@ -273,10 +274,15 @@ struct ConnectionEditorView: View {
             Section {
                 Toggle("Forward SSH Agent", isOn: $forwardAgent)
                     .accessibilityIdentifier("ForwardAgentToggle")
+                Toggle("Use Mosh", isOn: $useMosh)
+                    .accessibilityIdentifier("UseMoshToggle")
             } header: {
                 Text("SSH Options")
             } footer: {
-                Text("Planned — preference is saved with the profile. When implemented, the remote will be able to use this app's SSH keys (e.g. for `git push`) without copying them. Only enable for trusted hosts.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Forward SSH Agent: planned — preference is saved with the profile. Only enable for trusted hosts.")
+                    Text("Mosh: connect via Mobile Shell. Survives sleep, network changes, and IP roaming. Requires `mosh-server` installed on the remote (`apt install mosh` / `brew install mosh`).")
+                }
             }
 
             // tmux Integration — collapsed by default. Most users never use
@@ -441,6 +447,7 @@ struct ConnectionEditorView: View {
         folder = profile.folder ?? ""
         colorTag = profile.colorTag
         forwardAgent = profile.forwardAgent
+        useMosh = profile.useMosh
         // Load saved password from keychain if using password auth
         if profile.authMethod == .password {
             if let savedPassword = try? KeychainManager.shared.getPassword(
@@ -470,6 +477,7 @@ struct ConnectionEditorView: View {
         newProfile.folder = folder.trimmingCharacters(in: .whitespaces).isEmpty ? nil : folder
         newProfile.colorTag = colorTag
         newProfile.forwardAgent = forwardAgent
+        newProfile.useMosh = useMosh
 
         // Preserve existing metadata if editing
         if let existing = profile {

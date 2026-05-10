@@ -60,22 +60,40 @@ struct TerminalContainerView: View {
         } else if let host = appState.currentHost,
            let port = appState.currentPort,
            let username = appState.currentUsername {
-            logger.info("🔌 Initiating SSH connection to \(host):\(port) as \(username)")
-            terminalViewModel.connect(
-                host: host,
-                port: port,
-                username: username,
-                password: appState.currentPassword.flatMap { String(data: $0, encoding: .utf8) },
-                onConnected: { [weak appState] in
-                    appState?.connectionStatus = .connected
-                    // Zero and release password immediately after successful handshake.
-                    // It's no longer needed — reconnect uses SSHSession's stored creds. See #28.
-                    appState?.zeroAndClearPassword()
-                },
-                onError: { [weak appState] error in
-                    appState?.connectionStatus = .error(error)
-                }
-            )
+            let password = appState.currentPassword.flatMap { String(data: $0, encoding: .utf8) }
+            if appState.currentUseMosh {
+                logger.info("🔌 Initiating Mosh connection to \(host):\(port) as \(username)")
+                terminalViewModel.connectMosh(
+                    host: host,
+                    port: port,
+                    username: username,
+                    password: password,
+                    onConnected: { [weak appState] in
+                        appState?.connectionStatus = .connected
+                        appState?.zeroAndClearPassword()
+                    },
+                    onError: { [weak appState] error in
+                        appState?.connectionStatus = .error(error)
+                    }
+                )
+            } else {
+                logger.info("🔌 Initiating SSH connection to \(host):\(port) as \(username)")
+                terminalViewModel.connect(
+                    host: host,
+                    port: port,
+                    username: username,
+                    password: password,
+                    onConnected: { [weak appState] in
+                        appState?.connectionStatus = .connected
+                        // Zero and release password immediately after successful handshake.
+                        // It's no longer needed — reconnect uses SSHSession's stored creds. See #28.
+                        appState?.zeroAndClearPassword()
+                    },
+                    onError: { [weak appState] error in
+                        appState?.connectionStatus = .error(error)
+                    }
+                )
+            }
         } else {
             logger.warning("🔌 Not connecting - no session or params available")
         }
@@ -139,8 +157,12 @@ class TerminalViewModel: ObservableObject {
     /// Cancellable for font size observation
     private var fontSizeCancellable: AnyCancellable?
     
-    /// The SSH session
+    /// The SSH session (used unless useMosh is true).
     private(set) var sshSession: SSHSession?
+
+    /// The Mosh session (used when AppState.useMosh == true). Mutually
+    /// exclusive with sshSession — exactly one is active at a time.
+    private(set) var moshSession: MoshSession?
     
     /// Terminal dimensions
     private var cols: Int = 80
@@ -465,6 +487,92 @@ class TerminalViewModel: ObservableObject {
     
     enum SpecialKey {
         case escape, tab, up, down, left, right, enter, backspace
+    }
+}
+
+// MARK: - Mosh
+
+extension TerminalViewModel {
+    /// Mosh connect path. SSH-bootstraps mosh-server on the remote, then
+    /// switches to the UDP+OCB transport for the terminal session itself.
+    /// Tmux integration is intentionally NOT wired for Mosh sessions —
+    /// mosh and tmux are independent multiplexers; running tmux inside a
+    /// mosh shell works transparently without our protocol assistance.
+    func connectMosh(
+        host: String, port: Int, username: String, password: String?,
+        onConnected: @escaping @MainActor () -> Void = {},
+        onError: @escaping @MainActor (String) -> Void = { _ in }
+    ) {
+        Task {
+            do {
+                logger.info("Mosh: bootstrapping via SSH to \(host):\(port)")
+                guard let pw = password else {
+                    onError("Mosh requires a password (key auth not yet wired into Mosh bootstrap path)")
+                    return
+                }
+                let auth: SSHAuthMethod = .password(pw)
+                let result = try await MoshBootstrap.bootstrap(
+                    host: host, port: port, username: username, authMethod: auth
+                )
+                logger.info("Mosh: bootstrap done, opening UDP to :\(result.port)")
+                let session = try MoshSession(bootstrap: result)
+                session.delegate = MoshBridge(viewModel: self)
+                self.moshSession = session
+                session.start()
+                isConnected = true
+                onConnected()
+            } catch {
+                logger.error("Mosh connect failed: \(error.localizedDescription)")
+                isConnected = false
+                onError(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Send bytes from Ghostty's surface to the active Mosh session.
+    /// Called from the existing keystroke pipeline when moshSession != nil.
+    func moshSend(_ data: Data) {
+        moshSession?.send(data)
+    }
+}
+
+/// Tiny adapter so we don't have to make TerminalViewModel directly
+/// conform to MoshSessionDelegate (which would clash with the existing
+/// SSHSessionDelegate's didReceive shape). The bridge holds a weak ref
+/// to the view model + funnels Mosh's bytes into Ghostty's surface.
+final class MoshBridge: MoshSessionDelegate {
+    weak var viewModel: TerminalViewModel?
+    init(viewModel: TerminalViewModel) { self.viewModel = viewModel }
+
+    func moshSession(_ session: MoshSession, didReceive data: Data) {
+        Task { @MainActor in
+            self.viewModel?.feedMoshData(data)
+        }
+    }
+
+    func moshSession(_ session: MoshSession, didFailWith error: Error) {
+        Task { @MainActor in
+            self.viewModel?.disconnectError = error.localizedDescription
+            self.viewModel?.disconnectedByRemote = true
+        }
+    }
+
+    func moshSessionDidConnect(_ session: MoshSession) {
+        Task { @MainActor in self.viewModel?.isConnected = true }
+    }
+
+    func moshSessionDidDisconnect(_ session: MoshSession) {
+        Task { @MainActor in self.viewModel?.disconnectedByRemote = true }
+    }
+}
+
+extension TerminalViewModel {
+    func feedMoshData(_ data: Data) {
+        if let surface = surfaceView {
+            surface.feedData(data)
+        } else {
+            preSurfaceBuffer.append(data)
+        }
     }
 }
 

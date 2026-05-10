@@ -55,6 +55,7 @@
 		A10000AA /* TmuxStatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000AA /* TmuxStatusBarView.swift */; };
 		A10000AB /* RawTerminalUIViewController+StatusBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000AB /* RawTerminalUIViewController+StatusBar.swift */; };
 		A1000004 /* SSHSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* SSHSession.swift */; };
+		A10000B0 /* MoshSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000B0 /* MoshSession.swift */; };
 		A1000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000006 /* Assets.xcassets */; };
 		A1000007 /* DepartureMono-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = A2000007 /* DepartureMono-Regular.otf */; };
 		A1000010 /* Ghostty.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000011 /* Ghostty.swift */; };
@@ -93,6 +94,8 @@
 		A100007B /* Inconsolata-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A200007B /* Inconsolata-Bold.ttf */; };
 		A100007C /* AtkinsonHyperlegibleMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A200007C /* AtkinsonHyperlegibleMono-Regular.ttf */; };
 		A100007D /* AtkinsonHyperlegibleMono-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A200007D /* AtkinsonHyperlegibleMono-Bold.ttf */; };
+		A10000AC /* OpenDyslexicNerdFont-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = A20000AC /* OpenDyslexicNerdFont-Regular.otf */; };
+		A10000AD /* OpenDyslexicNerdFont-Bold.otf in Resources */ = {isa = PBXBuildFile; fileRef = A20000AD /* OpenDyslexicNerdFont-Bold.otf */; };
 		A1000080 /* SurfaceSearchOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000080 /* SurfaceSearchOverlay.swift */; };
 		A1000082 /* TmuxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000082 /* TmuxModels.swift */; };
 		A1000083 /* TmuxSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000083 /* TmuxSessionManager.swift */; };
@@ -224,6 +227,7 @@
 		A20000AA /* TmuxStatusBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxStatusBarView.swift; sourceTree = "<group>"; };
 		A20000AB /* RawTerminalUIViewController+StatusBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RawTerminalUIViewController+StatusBar.swift"; sourceTree = "<group>"; };
 		A2000004 /* SSHSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSession.swift; sourceTree = "<group>"; };
+		A20000B0 /* MoshSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshSession.swift; sourceTree = "<group>"; };
 		A2000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000007 /* DepartureMono-Regular.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "DepartureMono-Regular.otf"; sourceTree = "<group>"; };
 		A2000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -263,6 +267,8 @@
 		A200007B /* Inconsolata-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inconsolata-Bold.ttf"; sourceTree = "<group>"; };
 		A200007C /* AtkinsonHyperlegibleMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "AtkinsonHyperlegibleMono-Regular.ttf"; sourceTree = "<group>"; };
 		A200007D /* AtkinsonHyperlegibleMono-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "AtkinsonHyperlegibleMono-Bold.ttf"; sourceTree = "<group>"; };
+		A20000AC /* OpenDyslexicNerdFont-Regular.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "OpenDyslexicNerdFont-Regular.otf"; sourceTree = "<group>"; };
+		A20000AD /* OpenDyslexicNerdFont-Bold.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "OpenDyslexicNerdFont-Bold.otf"; sourceTree = "<group>"; };
 		A2000080 /* SurfaceSearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceSearchOverlay.swift; sourceTree = "<group>"; };
 		A2000082 /* TmuxModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxModels.swift; sourceTree = "<group>"; };
 		A2000083 /* TmuxSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxSessionManager.swift; sourceTree = "<group>"; };
@@ -399,6 +405,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000004 /* SSHSession.swift */,
+				A20000B0 /* MoshSession.swift */,
 				A2000090 /* NIOSSHConnection.swift */,
 				A2000026 /* SSHCommandRunner.swift */,
 				A2000084 /* TmuxLayout.swift */,
@@ -562,6 +569,8 @@
 				A200007B /* Inconsolata-Bold.ttf */,
 				A200007C /* AtkinsonHyperlegibleMono-Regular.ttf */,
 				A200007D /* AtkinsonHyperlegibleMono-Bold.ttf */,
+				A20000AC /* OpenDyslexicNerdFont-Regular.otf */,
+				A20000AD /* OpenDyslexicNerdFont-Bold.otf */,
 			);
 			path = Fonts;
 			sourceTree = "<group>";
@@ -723,6 +732,8 @@
 				A100007B /* Inconsolata-Bold.ttf in Resources */,
 				A100007C /* AtkinsonHyperlegibleMono-Regular.ttf in Resources */,
 				A100007D /* AtkinsonHyperlegibleMono-Bold.ttf in Resources */,
+				A10000AC /* OpenDyslexicNerdFont-Regular.otf in Resources */,
+				A10000AD /* OpenDyslexicNerdFont-Bold.otf in Resources */,
 				A1000061 /* themes in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -773,6 +784,7 @@
 				A10000A9 /* RawTerminalUIViewController+WindowPicker.swift in Sources */,
 				A10000AB /* RawTerminalUIViewController+StatusBar.swift in Sources */,
 				A1000004 /* SSHSession.swift in Sources */,
+				A10000B0 /* MoshSession.swift in Sources */,
 				A1000090 /* NIOSSHConnection.swift in Sources */,
 				A1000026 /* SSHCommandRunner.swift in Sources */,
 				A1000084 /* TmuxLayout.swift in Sources */,

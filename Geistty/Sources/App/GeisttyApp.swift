@@ -312,6 +312,10 @@ class AppState: ObservableObject {
     @Published var currentHost: String?
     @Published var currentPort: Int?
     @Published var currentUsername: String?
+    /// When true, route the active connection through MoshSession instead
+    /// of SSHSession (after SSH bootstrap). Set by reconnectLast() based on
+    /// the chosen profile's `useMosh` flag.
+    @Published var currentUseMosh: Bool = false
     // Not @Published — password should not be observable or persisted in Combine buffers.
     // Stored as Data for explicit zeroing on clear. See #28.
     var currentPassword: Data?

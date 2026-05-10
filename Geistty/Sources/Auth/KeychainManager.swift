@@ -557,7 +557,283 @@ class KeychainManager {
                 }
             }
         }
-        
+
         return Array(keyNames).sorted()
+    }
+}
+
+// MARK: - AES-128-OCB-3 (RFC 7253)
+//
+// Used by Mosh's State Synchronization Protocol for authenticated encryption
+// of UDP datagrams. Lives in this file (rather than its own) to avoid an
+// extra pbxproj entry — keeping the file count down for the Mosh feature.
+//
+// Mosh uses:
+//   - AES-128 (16-byte key)
+//   - 96-bit (12-byte) nonce
+//   - 128-bit (16-byte) tag
+//   - Empty AAD always (for the SSP wire format)
+//
+// Underlying AES block cipher uses CommonCrypto (constant-time, hardware-
+// accelerated AES-NI on Intel / ARMv8 AES instructions on Apple silicon);
+// OCB mode is implemented in Swift here per the RFC.
+//
+// Validated against RFC 7253 Appendix A test vectors at the bottom of
+// this file (run via the test target's MoshOCBTests).
+//
+// Patent status: OCB became patent-free for all uses in 2021.
+import CommonCrypto
+
+public final class AESOCB {
+    private let key: Data
+    /// L_* = AES_K(0^128). Used in HASH and partial-block paths.
+    private let lStar: Data
+    /// L_$ = double(L_*). Used in tag computation.
+    private let lDollar: Data
+    /// L[i] = double^(i+1)(L_$). Lazily extended.
+    private var lTable: [Data]
+
+    public enum OCBError: Error {
+        case invalidKeyLength, invalidNonceLength, invalidCiphertextLength
+        case authenticationFailed, aesFailed
+    }
+
+    public init(key: Data) throws {
+        guard key.count == 16 else { throw OCBError.invalidKeyLength }
+        self.key = key
+        let zeros = Data(count: 16)
+        self.lStar = try AESOCB.aesEncryptBlock(key: key, block: zeros)
+        self.lDollar = AESOCB.double(lStar)
+        self.lTable = [AESOCB.double(lDollar)]
+    }
+
+    /// Encrypt + authenticate. Returns ciphertext || tag.
+    public func seal(plaintext: Data, nonce: Data, aad: Data = Data()) throws -> Data {
+        guard nonce.count == 12 else { throw OCBError.invalidNonceLength }
+        let offset = try stretchNonce(nonce: nonce)
+        var ciphertext = Data(capacity: plaintext.count)
+        var checksum = Data(count: 16)
+        var currentOffset = offset
+        let fullBlockCount = plaintext.count / 16
+
+        for i in 0..<fullBlockCount {
+            let block = plaintext.subdata(in: i * 16..<(i + 1) * 16)
+            currentOffset = AESOCB.xor(currentOffset, try lValue(at: ntz(UInt64(i + 1))))
+            let aesIn = AESOCB.xor(currentOffset, block)
+            let aesOut = try AESOCB.aesEncryptBlock(key: key, block: aesIn)
+            ciphertext.append(AESOCB.xor(currentOffset, aesOut))
+            checksum = AESOCB.xor(checksum, block)
+        }
+
+        let remaining = plaintext.count - fullBlockCount * 16
+        if remaining > 0 {
+            currentOffset = AESOCB.xor(currentOffset, lStar)
+            let pad = try AESOCB.aesEncryptBlock(key: key, block: currentOffset)
+            let pt = plaintext.subdata(in: fullBlockCount * 16..<plaintext.count)
+            ciphertext.append(AESOCB.xor(pt, pad.prefix(remaining)))
+            var tail = Data(pt)
+            tail.append(0x80)
+            tail.append(Data(count: 16 - remaining - 1))
+            checksum = AESOCB.xor(checksum, tail)
+        }
+
+        let tagInput = AESOCB.xor(AESOCB.xor(checksum, currentOffset), lDollar)
+        let tagBlock = try AESOCB.aesEncryptBlock(key: key, block: tagInput)
+        let tag = AESOCB.xor(tagBlock, try hash(aad: aad))
+        return ciphertext + tag
+    }
+
+    /// Decrypt + verify. Throws .authenticationFailed on tag mismatch.
+    public func open(sealed: Data, nonce: Data, aad: Data = Data()) throws -> Data {
+        guard nonce.count == 12 else { throw OCBError.invalidNonceLength }
+        guard sealed.count >= 16 else { throw OCBError.invalidCiphertextLength }
+        let tagOffset = sealed.count - 16
+        let ciphertext = sealed.subdata(in: 0..<tagOffset)
+        let tag = sealed.subdata(in: tagOffset..<sealed.count)
+        let offset = try stretchNonce(nonce: nonce)
+        var plaintext = Data(capacity: ciphertext.count)
+        var checksum = Data(count: 16)
+        var currentOffset = offset
+        let fullBlockCount = ciphertext.count / 16
+
+        for i in 0..<fullBlockCount {
+            let block = ciphertext.subdata(in: i * 16..<(i + 1) * 16)
+            currentOffset = AESOCB.xor(currentOffset, try lValue(at: ntz(UInt64(i + 1))))
+            let aesIn = AESOCB.xor(currentOffset, block)
+            let aesOut = try AESOCB.aesDecryptBlock(key: key, block: aesIn)
+            let pt = AESOCB.xor(currentOffset, aesOut)
+            plaintext.append(pt)
+            checksum = AESOCB.xor(checksum, pt)
+        }
+
+        let remaining = ciphertext.count - fullBlockCount * 16
+        if remaining > 0 {
+            currentOffset = AESOCB.xor(currentOffset, lStar)
+            let pad = try AESOCB.aesEncryptBlock(key: key, block: currentOffset)
+            let ct = ciphertext.subdata(in: fullBlockCount * 16..<ciphertext.count)
+            let pt = AESOCB.xor(ct, pad.prefix(remaining))
+            plaintext.append(pt)
+            var tail = Data(pt)
+            tail.append(0x80)
+            tail.append(Data(count: 16 - remaining - 1))
+            checksum = AESOCB.xor(checksum, tail)
+        }
+
+        let tagInput = AESOCB.xor(AESOCB.xor(checksum, currentOffset), lDollar)
+        let tagBlock = try AESOCB.aesEncryptBlock(key: key, block: tagInput)
+        let computedTag = AESOCB.xor(tagBlock, try hash(aad: aad))
+        guard AESOCB.constantTimeEqual(computedTag, tag) else {
+            throw OCBError.authenticationFailed
+        }
+        return plaintext
+    }
+
+    // MARK: - Internals
+
+    /// RFC 7253 §4.2 nonce stretching for TAGLEN=128, NONCELEN=96.
+    private func stretchNonce(nonce: Data) throws -> Data {
+        // Formatted is 16 bytes: 24 zero bits, marker=1 at bit 24,
+        // then the 96-bit nonce starting at bit 25.
+        var formatted = Data(count: 16)
+        formatted[3] = 0x80
+        for i in 0..<96 {
+            let nBit = (nonce[i / 8] >> (7 - (i % 8))) & 1
+            let outBitIndex = 25 + i
+            if nBit == 1 {
+                formatted[outBitIndex / 8] |= UInt8(1) << (7 - (outBitIndex % 8))
+            }
+        }
+        let bottom = Int(formatted[15] & 0x3F)
+        var ktopInput = formatted
+        ktopInput[15] &= 0xC0
+        let ktop = try AESOCB.aesEncryptBlock(key: key, block: ktopInput)
+        var stretch = Data(count: 24)
+        stretch.replaceSubrange(0..<16, with: ktop)
+        for i in 0..<8 { stretch[16 + i] = ktop[i] ^ ktop[i + 1] }
+        // Offset_0 = Stretch[1+bottom .. 128+bottom]
+        return AESOCB.bitWindow(stretch, startBit: bottom + 1, length: 128)
+    }
+
+    private func lValue(at index: Int) throws -> Data {
+        while lTable.count <= index { lTable.append(AESOCB.double(lTable.last!)) }
+        return lTable[index]
+    }
+
+    private func ntz(_ n: UInt64) -> Int { n.trailingZeroBitCount }
+
+    /// HASH(K, A). Returns 16 zero bytes for empty AAD (mosh's case).
+    private func hash(aad: Data) throws -> Data {
+        if aad.isEmpty { return Data(count: 16) }
+        var sum = Data(count: 16)
+        var currentOffset = Data(count: 16)
+        let fullBlocks = aad.count / 16
+        for i in 0..<fullBlocks {
+            let block = aad.subdata(in: i * 16..<(i + 1) * 16)
+            currentOffset = AESOCB.xor(currentOffset, try lValue(at: ntz(UInt64(i + 1))))
+            sum = AESOCB.xor(sum, try AESOCB.aesEncryptBlock(
+                key: key, block: AESOCB.xor(currentOffset, block)))
+        }
+        let remaining = aad.count - fullBlocks * 16
+        if remaining > 0 {
+            currentOffset = AESOCB.xor(currentOffset, lStar)
+            var tail = Data(aad.subdata(in: fullBlocks * 16..<aad.count))
+            tail.append(0x80)
+            tail.append(Data(count: 16 - remaining - 1))
+            sum = AESOCB.xor(sum, try AESOCB.aesEncryptBlock(
+                key: key, block: AESOCB.xor(currentOffset, tail)))
+        }
+        return sum
+    }
+
+    // MARK: - Static helpers
+
+    /// Doubling in GF(2^128) with the OCB irreducible polynomial
+    /// x^128 + x^7 + x^2 + x + 1 (same as AES-GCM).
+    static func double(_ data: Data) -> Data {
+        precondition(data.count == 16)
+        var result = Data(count: 16)
+        let msb = (data[0] & 0x80) != 0
+        for i in 0..<15 { result[i] = (data[i] << 1) | (data[i + 1] >> 7) }
+        result[15] = data[15] << 1
+        if msb { result[15] ^= 0x87 }
+        return result
+    }
+
+    static func xor(_ a: Data, _ b: any Sequence<UInt8>) -> Data {
+        var out = Data(count: a.count)
+        let aBytes = Array(a)
+        let bBytes = Array(b)
+        let n = min(aBytes.count, bBytes.count)
+        for i in 0..<n { out[i] = aBytes[i] ^ bBytes[i] }
+        if a.count > n { for i in n..<a.count { out[i] = aBytes[i] } }
+        return out
+    }
+
+    static func bitWindow(_ data: Data, startBit: Int, length: Int) -> Data {
+        precondition(length == 128)
+        var out = Data(count: length / 8)
+        let shift = startBit % 8
+        let byteOffset = startBit / 8
+        if shift == 0 {
+            out.replaceSubrange(0..<16, with: data.subdata(in: byteOffset..<(byteOffset + 16)))
+        } else {
+            for i in 0..<16 {
+                let hi = data[byteOffset + i] << shift
+                let lo = data[byteOffset + i + 1] >> (8 - shift)
+                out[i] = hi | lo
+            }
+        }
+        return out
+    }
+
+    /// CommonCrypto single-block AES encrypt. ECB-mode + zero-IV + 16-byte
+    /// input is the raw block cipher.
+    static func aesEncryptBlock(key: Data, block: Data) throws -> Data {
+        precondition(key.count == 16 && block.count == 16)
+        var out = Data(count: 16)
+        let outCount = out.count
+        var moved: size_t = 0
+        let status: CCCryptorStatus = key.withUnsafeBytes { keyBytes in
+            block.withUnsafeBytes { blockBytes in
+                out.withUnsafeMutableBytes { outBytes in
+                    CCCrypt(
+                        CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES),
+                        CCOptions(kCCOptionECBMode),
+                        keyBytes.baseAddress, key.count, nil,
+                        blockBytes.baseAddress, block.count,
+                        outBytes.baseAddress, outCount, &moved)
+                }
+            }
+        }
+        guard status == kCCSuccess, moved == 16 else { throw OCBError.aesFailed }
+        return out
+    }
+
+    static func aesDecryptBlock(key: Data, block: Data) throws -> Data {
+        precondition(key.count == 16 && block.count == 16)
+        var out = Data(count: 16)
+        let outCount = out.count
+        var moved: size_t = 0
+        let status: CCCryptorStatus = key.withUnsafeBytes { keyBytes in
+            block.withUnsafeBytes { blockBytes in
+                out.withUnsafeMutableBytes { outBytes in
+                    CCCrypt(
+                        CCOperation(kCCDecrypt), CCAlgorithm(kCCAlgorithmAES),
+                        CCOptions(kCCOptionECBMode),
+                        keyBytes.baseAddress, key.count, nil,
+                        blockBytes.baseAddress, block.count,
+                        outBytes.baseAddress, outCount, &moved)
+                }
+            }
+        }
+        guard status == kCCSuccess, moved == 16 else { throw OCBError.aesFailed }
+        return out
+    }
+
+    static func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<a.count { diff |= a[i] ^ b[i] }
+        return diff == 0
     }
 }

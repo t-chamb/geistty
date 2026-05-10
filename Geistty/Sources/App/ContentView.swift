@@ -260,6 +260,7 @@ struct ContentView: View {
             username: profile.username,
             password: resolvedPassword
         )
+        appState.currentUseMosh = profile.useMosh
         appState.connectionStatus = .connecting
         ConnectionProfileManager.shared.markConnected(profile)
     }
