@@ -394,3 +394,116 @@ enum UserDefaultsKey {
     static let colorTheme = "terminal.colorTheme"
     static let showStatusBar = "ui.showStatusBar"
 }
+
+// MARK: - Shortcuts.app integration
+
+import AppIntents
+
+/// AppEntity wrapping a ConnectionProfile so Shortcuts.app + Siri can pick
+/// from the user's saved connections by name. The entity is "transient" in
+/// the sense that the underlying ConnectionProfile may be deleted between
+/// shortcut invocations — the query handles missing IDs gracefully.
+struct ConnectionProfileEntity: AppEntity {
+    let id: UUID
+    let displayName: String
+    let host: String
+    let port: Int
+    let username: String
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation =
+        TypeDisplayRepresentation(name: "Connection")
+
+    var displayRepresentation: DisplayRepresentation {
+        let subtitle = port == 22 ? "\(username)@\(host)" : "\(username)@\(host):\(port)"
+        return DisplayRepresentation(title: "\(displayName)", subtitle: "\(subtitle)")
+    }
+
+    static var defaultQuery = ConnectionProfileQuery()
+}
+
+/// Shortcuts query — drives the profile picker UI in the Shortcuts editor.
+/// Pulls from ConnectionProfileManager.shared which is the same source as
+/// the in-app list, so any profile the user can see in Saved Connections
+/// will be pickable in a Shortcut.
+struct ConnectionProfileQuery: EntityQuery {
+    @MainActor
+    func entities(for identifiers: [UUID]) async throws -> [ConnectionProfileEntity] {
+        let profiles = ConnectionProfileManager.shared.profiles
+        return identifiers.compactMap { id in
+            guard let p = profiles.first(where: { $0.id == id }) else { return nil }
+            return ConnectionProfileEntity(
+                id: p.id, displayName: p.name, host: p.host, port: p.port, username: p.username
+            )
+        }
+    }
+
+    @MainActor
+    func suggestedEntities() async throws -> [ConnectionProfileEntity] {
+        ConnectionProfileManager.shared.profiles.map {
+            ConnectionProfileEntity(
+                id: $0.id, displayName: $0.name, host: $0.host, port: $0.port, username: $0.username
+            )
+        }
+    }
+}
+
+/// "Open Connection in Geistty" — the headline intent. User can build a
+/// shortcut like "When I tap this widget, open my prod box" or trigger
+/// via Siri "Hey Siri, open prod box in Geistty".
+///
+/// Implementation routes through the existing notification graph the
+/// home screen + keyboard shortcuts use (.showConnectionProfiles +
+/// .openSpecificProfile). The actual SSH connect happens once the home
+/// screen handles the notification — same pipeline as tapping a row in
+/// Saved Connections.
+struct OpenConnectionIntent: AppIntent {
+    static var title: LocalizedStringResource = "Open Connection"
+    static var description = IntentDescription(
+        "Opens Geistty and connects to a saved SSH profile.",
+        categoryName: "Connections"
+    )
+
+    /// Required so the intent runs the app foreground (as opposed to
+    /// running silently in the background, which would skip the UI).
+    static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "Connection")
+    var profile: ConnectionProfileEntity
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        // Post a notification carrying the profile ID. The app's top-level
+        // handler (added below) listens for this and triggers the same
+        // reconnectLast(profile:) code path the home screen uses.
+        NotificationCenter.default.post(
+            name: .openSpecificProfile,
+            object: nil,
+            userInfo: ["profileId": profile.id]
+        )
+        return .result()
+    }
+}
+
+/// AppShortcutsProvider exposes the intent in the Shortcuts gallery
+/// without the user having to manually create a Shortcut. Phrases listed
+/// here become Siri trigger phrases.
+struct GeisttyShortcuts: AppShortcutsProvider {
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: OpenConnectionIntent(),
+            phrases: [
+                "Open \(\.$profile) in \(.applicationName)",
+                "Connect to \(\.$profile) with \(.applicationName)",
+                "Start \(\.$profile) in \(.applicationName)",
+            ],
+            shortTitle: "Open Connection",
+            systemImageName: "terminal"
+        )
+    }
+}
+
+extension Notification.Name {
+    /// Fired when a Shortcuts.app invocation requests a specific profile
+    /// by ID. ContentView observes this and dispatches to reconnectLast().
+    static let openSpecificProfile = Notification.Name("geistty.openSpecificProfile")
+}

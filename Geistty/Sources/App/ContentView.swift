@@ -166,6 +166,23 @@ struct ContentView: View {
             guard scenePhase == .active else { return }
             showSettings = true
         }
+        // Shortcuts.app + Siri integration. The OpenConnectionIntent
+        // (defined in GeisttyApp.swift) posts this with userInfo["profileId"]
+        // set to the picked profile's UUID. We resolve to the live profile
+        // and reuse the home-screen reconnect path so the SSH layer goes
+        // through the same code that powers the Reconnect button.
+        .onReceive(NotificationCenter.default.publisher(for: .openSpecificProfile)) { note in
+            guard scenePhase == .active else { return }
+            guard let id = note.userInfo?["profileId"] as? UUID,
+                  let profile = profileManager.profiles.first(where: { $0.id == id })
+            else { return }
+            // If something else is connected, tear it down first so the
+            // shortcut always lands the user on the requested profile.
+            if appState.connectionStatus != .disconnected {
+                disconnectAndReset()
+            }
+            reconnectLast(profile)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .showSSHKeyManager)) { _ in
             guard scenePhase == .active else { return }
             showSSHKeyManager = true
