@@ -94,6 +94,8 @@ public struct MoshBootstrap {
     ///
     /// (The key is 16 raw bytes, base64-encoded. Mosh uses raw base64 with
     /// no padding by historical accident, so we strip and re-pad.)
+    /// Bootstrap from a raw SSHAuthMethod (password or pre-built key).
+    /// Lower-level entry point — most callers want bootstrap(profile:credential:).
     @MainActor
     static func bootstrap(
         host: String,
@@ -142,6 +144,39 @@ public struct MoshBootstrap {
 
         logger.info("Mosh bootstrap succeeded: udp://\(host):\(portValue), 16-byte key")
         return Result(host: host, port: portValue, key: keyData)
+    }
+}
+
+extension MoshBootstrap {
+    /// High-level bootstrap that takes an SSHCredential — handles the
+    /// full {.password, .privateKey, .privateKeyData, .sshPrivateKey}
+    /// matrix the rest of the app uses. Mirrors SSHSession's private
+    /// buildAuthMethod helper so Mosh sessions get the same
+    /// auth-method derivation as plain SSH.
+    @MainActor
+    static func bootstrap(
+        host: String,
+        port: Int,
+        username: String,
+        credential: SSHCredential
+    ) async throws -> Result {
+        let authMethod: SSHAuthMethod
+        switch credential.authType {
+        case .password(let pw):
+            authMethod = .password(pw)
+        case .privateKey(let path, let passphrase):
+            let keyData = try Data(contentsOf: URL(fileURLWithPath: path))
+            let pk = try SSHKeyParser.parsePrivateKey(keyData, passphrase: passphrase)
+            authMethod = .publicKey(privateKey: pk)
+        case .privateKeyData(let keyData, let passphrase):
+            let pk = try SSHKeyParser.parsePrivateKey(keyData, passphrase: passphrase)
+            authMethod = .publicKey(privateKey: pk)
+        case .sshPrivateKey(let nioKey):
+            authMethod = .publicKey(privateKey: nioKey)
+        }
+        return try await bootstrap(
+            host: host, port: port, username: username, authMethod: authMethod
+        )
     }
 }
 
@@ -303,6 +338,53 @@ enum MoshProto {
         return (oldNum, newNum, ackNum, diff)
     }
 
+    /// Encode a Mosh ResizeMessage. From `userinput.proto`:
+    ///
+    ///     message ResizeMessage {
+    ///         required int32 num_x = 1;  // columns
+    ///         required int32 num_y = 2;  // rows
+    ///     }
+    ///
+    /// This is then wrapped in a UserStream Instruction whose body is
+    /// itself a small protobuf containing the resize. Mosh-server reads
+    /// the UserStream, sees the resize, and forwards SIGWINCH + ioctl
+    /// TIOCSWINSZ to the remote PTY.
+    static func resizeMessage(cols: Int, rows: Int) -> Data {
+        var d = Data()
+        d.append(tag(field: 1, wireType: .varint))
+        d.append(varint(UInt64(cols)))
+        d.append(tag(field: 2, wireType: .varint))
+        d.append(varint(UInt64(rows)))
+        return d
+    }
+
+    /// Wrap a sub-message into a UserStream's Instruction list.
+    /// `UserStream { repeated Instruction instruction = 1 }` where each
+    /// Instruction carries either a Keystroke (raw bytes) or a Resize.
+    /// Field tags inside Instruction:
+    ///   1 = keystroke (Keystroke message — bytes field)
+    ///   2 = resize    (ResizeMessage)
+    static func userStreamResize(cols: Int, rows: Int) -> Data {
+        let resize = resizeMessage(cols: cols, rows: rows)
+        var instr = Data()
+        instr.append(encodeMessage(field: 2, value: resize))
+        var stream = Data()
+        stream.append(encodeMessage(field: 1, value: instr))
+        return stream
+    }
+
+    /// Wrap raw keystroke bytes in a UserStream Instruction.
+    /// Keystroke message: `bytes keys = 1`.
+    static func userStreamKeystroke(_ bytes: Data) -> Data {
+        var keystroke = Data()
+        keystroke.append(encodeBytes(field: 1, value: bytes))
+        var instr = Data()
+        instr.append(encodeMessage(field: 1, value: keystroke))
+        var stream = Data()
+        stream.append(encodeMessage(field: 1, value: instr))
+        return stream
+    }
+
     /// Read a varint at the given offset. Returns (value, bytes consumed).
     static func readVarint(_ data: Data, at offset: Int) -> (UInt64, Int)? {
         var value: UInt64 = 0
@@ -411,10 +493,18 @@ public final class MoshSession {
         conn.start(queue: queue)
     }
 
-    /// Send raw byte data to the remote (typically keystrokes from the
-    /// Ghostty surface). Wraps into an Instruction, encrypts, transmits.
+    /// Send raw keystroke bytes to the remote. Wraps in a UserStream
+    /// Keystroke instruction so mosh-server feeds them to the PTY.
     public func send(_ data: Data) {
-        sendInstruction(payload: data)
+        let payload = MoshProto.userStreamKeystroke(data)
+        sendInstruction(payload: payload)
+    }
+
+    /// Send a terminal resize so mosh-server matches the local grid via
+    /// SIGWINCH + ioctl TIOCSWINSZ on the remote PTY.
+    public func sendResize(cols: Int, rows: Int) {
+        let payload = MoshProto.userStreamResize(cols: cols, rows: rows)
+        sendInstruction(payload: payload)
     }
 
     public func stop() {

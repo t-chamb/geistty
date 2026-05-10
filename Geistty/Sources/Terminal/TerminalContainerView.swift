@@ -316,23 +316,39 @@ class TerminalViewModel: ObservableObject {
         isConnected = false
     }
     
-    /// Called when Ghostty's write_callback fires — send to SSH.
-    /// This uses writeFromGhostty() which bypasses the tmux control mode queueing
-    /// guard, because Ghostty's outbound data includes both user keystrokes AND
-    /// internal viewer commands that must reach tmux immediately during startup.
+    /// Called when Ghostty's write_callback fires — send to SSH or Mosh.
+    /// For SSH: uses writeFromGhostty() which bypasses the tmux control mode
+    /// queueing guard, because Ghostty's outbound data includes both user
+    /// keystrokes AND internal viewer commands that must reach tmux
+    /// immediately during startup.
+    /// For Mosh: forwards to MoshSession.send() which wraps in a UserStream
+    /// Instruction, encrypts with AES-OCB, and sends via UDP.
     func sendInput(_ data: Data) {
         if let str = String(data: data, encoding: .utf8) {
             logger.debug("⌨️ sendInput: \(data.count) bytes: \(str.prefix(20))")
         } else {
             logger.debug("⌨️ sendInput: \(data.count) bytes (binary)")
         }
-        sshSession?.writeFromGhostty(data)
+        if let mosh = moshSession {
+            mosh.send(data)
+        } else {
+            sshSession?.writeFromGhostty(data)
+        }
     }
-    
+
     func resize(cols: Int, rows: Int) {
         self.cols = cols
         self.rows = rows
-        if sshSession != nil {
+        if let mosh = moshSession {
+            // Mosh resize: send a UserStream with rows+cols update so the
+            // remote PTY matches the local terminal grid. Mosh's
+            // ResizeMessage in transportinstruction.proto carries
+            // num_x (cols) + num_y (rows) as varints; we send it as a
+            // small in-band Instruction whose diff payload is the encoded
+            // ResizeMessage. The server-side mosh-server reads + applies.
+            mosh.sendResize(cols: cols, rows: rows)
+            pendingResize = nil
+        } else if sshSession != nil {
             sshSession?.resize(cols: cols, rows: rows)
             pendingResize = nil
         } else {
@@ -498,6 +514,12 @@ extension TerminalViewModel {
     /// Tmux integration is intentionally NOT wired for Mosh sessions —
     /// mosh and tmux are independent multiplexers; running tmux inside a
     /// mosh shell works transparently without our protocol assistance.
+    ///
+    /// Resolves credentials in priority order:
+    ///   1. Profile from ConnectionProfileManager matching host+username
+    ///      → CredentialManager (handles password, .pem files, Secure
+    ///      Enclave keys — all the auth shapes the SSH path supports)
+    ///   2. Raw password fallback (Quick Connect path with no saved profile)
     func connectMosh(
         host: String, port: Int, username: String, password: String?,
         onConnected: @escaping @MainActor () -> Void = {},
@@ -506,13 +528,8 @@ extension TerminalViewModel {
         Task {
             do {
                 logger.info("Mosh: bootstrapping via SSH to \(host):\(port)")
-                guard let pw = password else {
-                    onError("Mosh requires a password (key auth not yet wired into Mosh bootstrap path)")
-                    return
-                }
-                let auth: SSHAuthMethod = .password(pw)
-                let result = try await MoshBootstrap.bootstrap(
-                    host: host, port: port, username: username, authMethod: auth
+                let result = try await Self.bootstrapMoshWithBestCredential(
+                    host: host, port: port, username: username, password: password
                 )
                 logger.info("Mosh: bootstrap done, opening UDP to :\(result.port)")
                 let session = try MoshSession(bootstrap: result)
@@ -527,6 +544,41 @@ extension TerminalViewModel {
                 onError(error.localizedDescription)
             }
         }
+    }
+
+    /// Pick the best credential available for this host+username and
+    /// drive the bootstrap. Lookup order:
+    ///   1. Saved profile (matched on host + username) → CredentialManager
+    ///      resolves whichever auth method that profile uses
+    ///   2. Provided raw password (from a Quick Connect with no saved profile)
+    ///   3. error.
+    @MainActor
+    static func bootstrapMoshWithBestCredential(
+        host: String, port: Int, username: String, password: String?
+    ) async throws -> MoshBootstrap.Result {
+        // 1. Saved profile lookup.
+        if let profile = ConnectionProfileManager.shared.profiles.first(where: {
+            $0.host == host && $0.username == username
+        }) {
+            do {
+                let cred = try await CredentialManager.shared.getCredentials(for: profile)
+                return try await MoshBootstrap.bootstrap(
+                    host: host, port: port, username: username, credential: cred
+                )
+            } catch {
+                // Fall through to the raw-password fallback below.
+                logger.debug("CredentialManager couldn't resolve for matched profile (\(error.localizedDescription)); trying raw password")
+            }
+        }
+        // 2. Raw password fallback.
+        if let pw = password, !pw.isEmpty {
+            return try await MoshBootstrap.bootstrap(
+                host: host, port: port, username: username, authMethod: .password(pw)
+            )
+        }
+        throw MoshBootstrap.BootstrapError.sshFailed(
+            "No credential available for \(username)@\(host) — save a profile with password/key auth first."
+        )
     }
 
     /// Send bytes from Ghostty's surface to the active Mosh session.
