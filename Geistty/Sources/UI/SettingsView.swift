@@ -275,6 +275,28 @@ struct SettingsView: View {
                     .accessibilityIdentifier("KnownHostsLink")
                 }
 
+                // Tailscale — auto-discovery of devices on the user's
+                // tailnet via the Tailscale API. Optional; only shows in
+                // the connection list once a token is configured.
+                Section {
+                    NavigationLink {
+                        TailscaleSettingsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "network")
+                                .foregroundStyle(.blue)
+                            Text("Tailscale")
+                            Spacer()
+                            if TailscaleManager.shared.isConfigured {
+                                Text("On")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("TailscaleLink")
+                }
+
                 // Keyboard Shortcuts — surfaces the hardware-keyboard
                 // bindings (showQuickConnect, showSettings, etc.) that the
                 // notification handlers expose. Without this link, iPad
@@ -1331,6 +1353,130 @@ struct KnownHostDetailView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { dismiss() }
             }
+        }
+    }
+}
+
+// MARK: - Tailscale Settings
+
+/// Configuration UI for the Tailscale integration. Lets the user paste
+/// a Personal Access Token from the admin console (Settings → Keys),
+/// pick a default tailnet ('-' is fine for single-tailnet users), and
+/// pick the SSH username to use when one-tap-connecting to discovered
+/// devices. Token lives in Keychain (kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+/// no iCloud) — never written to disk.
+struct TailscaleSettingsView: View {
+    @ObservedObject private var manager = TailscaleManager.shared
+    @State private var tokenDraft: String = ""
+    @State private var tailnetDraft: String = ""
+    @State private var usernameDraft: String = ""
+    @State private var saveError: String?
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("Personal Access Token", text: $tokenDraft)
+                    .textContentType(.password)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("TailscaleTokenField")
+
+                TextField("Tailnet (e.g. example.ts.net or -)", text: $tailnetDraft)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("TailscaleTailnetField")
+
+                TextField("Default SSH username", text: $usernameDraft)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("TailscaleUsernameField")
+
+                Button {
+                    save()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text(manager.isConfigured ? "Update" : "Save")
+                            .frame(maxWidth: .infinity)
+                        Spacer()
+                    }
+                }
+                .accessibilityIdentifier("TailscaleSaveButton")
+
+                if manager.isConfigured {
+                    Button(role: .destructive) {
+                        try? manager.setToken("")
+                        tokenDraft = ""
+                    } label: {
+                        Text("Disconnect Tailscale")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .accessibilityIdentifier("TailscaleDisconnectButton")
+                }
+            } header: {
+                Text("API Access")
+            } footer: {
+                Text("Get a token from the Tailscale admin console: Settings → Keys → Generate access token. Use '-' as the tailnet for single-tailnet accounts. The token is stored in this device's Keychain — never synced to iCloud.")
+            }
+
+            if manager.isConfigured {
+                Section("Connection Test") {
+                    Button {
+                        Task { await manager.refresh() }
+                    } label: {
+                        HStack {
+                            if manager.isLoading { ProgressView() }
+                            Text(manager.isLoading ? "Refreshing\u{2026}" : "Refresh Devices")
+                        }
+                    }
+                    .accessibilityIdentifier("TailscaleRefreshButton")
+
+                    if !manager.devices.isEmpty {
+                        Text("\(manager.devices.count) device\(manager.devices.count == 1 ? "" : "s") found")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let err = manager.lastError {
+                        Label(err, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            if let err = saveError {
+                Section {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+            }
+        }
+        .navigationTitle("Tailscale")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Pre-populate tailnet + username (token is never round-tripped
+            // back into a SecureField — show empty even if one is configured).
+            tailnetDraft = manager.tailnet
+            usernameDraft = manager.defaultUsername
+        }
+    }
+
+    private func save() {
+        do {
+            // Empty token disconnects; non-empty replaces.
+            if !tokenDraft.isEmpty {
+                try manager.setToken(tokenDraft)
+                tokenDraft = ""  // clear the field on save (security)
+            }
+            manager.setTailnet(tailnetDraft)
+            manager.setUsername(usernameDraft)
+            saveError = nil
+            // Validate by hitting the API once.
+            Task { await manager.refresh() }
+        } catch {
+            saveError = "Failed to save token: \(error.localizedDescription)"
         }
     }
 }

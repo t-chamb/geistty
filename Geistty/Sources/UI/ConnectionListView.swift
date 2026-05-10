@@ -15,6 +15,7 @@ struct ConnectionListView: View {
     
     @ObservedObject private var profileManager = ConnectionProfileManager.shared
     @ObservedObject private var keyManager = SSHKeyManager.shared
+    @ObservedObject private var tailscaleManager = TailscaleManager.shared
     
     @State private var showingAddConnection = false
     @State private var showingKeyManager = false
@@ -141,6 +142,74 @@ struct ConnectionListView: View {
                     }
                 }
                 
+                // Tailscale Devices — only when configured. Auto-discovered
+                // devices on the user's tailnet, sorted online-first. Tapping
+                // a device builds an ephemeral profile and reuses the same
+                // reconnect pipeline as Saved Connections.
+                if tailscaleManager.isConfigured {
+                    Section {
+                        if tailscaleManager.devices.isEmpty && tailscaleManager.isLoading {
+                            HStack {
+                                ProgressView()
+                                Text("Loading\u{2026}").foregroundStyle(.secondary)
+                            }
+                        } else if tailscaleManager.devices.isEmpty {
+                            Text(tailscaleManager.lastError ?? "No devices found")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(tailscaleManager.devices) { device in
+                                Button {
+                                    connectToTailscale(device)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: device.online ? "circle.fill" : "circle")
+                                            .foregroundStyle(device.online ? .green : .secondary)
+                                            .font(.system(size: 8))
+                                            .frame(width: 16)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(device.name).font(.body)
+                                            Text("\(tailscaleManager.defaultUsername)@\(device.preferredAddress)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        if !device.os.isEmpty {
+                                            Text(device.os)
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("TailscaleRow-\(device.name)")
+                            }
+                        }
+                    } header: {
+                        HStack {
+                            Image(systemName: "network").font(.caption)
+                            Text("Tailscale Devices")
+                            Spacer()
+                            Button {
+                                Task { await tailscaleManager.refresh() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("TailscaleRefreshHeader")
+                        }
+                    } footer: {
+                        if let err = tailscaleManager.lastError {
+                            Text(err).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+
                 // SSH Keys Section
                 Section {
                     NavigationLink {
@@ -326,6 +395,15 @@ struct ConnectionListView: View {
     
     // MARK: - Actions
     
+    /// Connect to a Tailscale device by building an ephemeral profile and
+    /// dispatching through the existing connect(to:) pipeline. The profile
+    /// isn't saved to ConnectionProfileManager — Tailscale devices are
+    /// re-discovered fresh, so persisting them would create stale duplicates.
+    private func connectToTailscale(_ device: TailscaleDevice) {
+        let profile = tailscaleManager.ephemeralProfile(for: device)
+        connect(to: profile)
+    }
+
     private func connect(to profile: ConnectionProfile) {
         connectionInProgress = profile
         

@@ -698,3 +698,258 @@ final class SnippetManager: ObservableObject {
         Task { @MainActor in self.mergeFromiCloud() }
     }
 }
+
+// MARK: - Tailscale auto-discovery
+
+/// One device on the user's Tailscale tailnet — Tailscale's REST API
+/// returns these via GET /api/v2/tailnet/{tailnet}/devices. We model only
+/// the fields the picker UI needs; the API returns ~30 fields per device
+/// but most are operational metadata (taildrop status, etc.).
+struct TailscaleDevice: Identifiable, Hashable, Codable {
+    var id: String                     // stable Tailscale device ID
+    var name: String                   // MagicDNS short name (e.g. "prod-box")
+    var hostname: String               // FQDN (e.g. "prod-box.tail-scale.ts.net")
+    var addresses: [String]            // Tailscale IPs (100.x.x.x, fd7a:...)
+    var os: String                     // "linux" / "macOS" / "iOS" / "windows"
+    var lastSeen: Date?                // nil if currently online
+    var online: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id = "nodeId"
+        case name
+        case hostname
+        case addresses
+        case os
+        case lastSeen
+        // The Tailscale API doesn't have a top-level "online" field; we
+        // derive it from `lastSeen` being null/recent. Custom decoder.
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        name = try c.decode(String.self, forKey: .name)
+        hostname = (try? c.decode(String.self, forKey: .hostname)) ?? name
+        addresses = (try? c.decode([String].self, forKey: .addresses)) ?? []
+        os = (try? c.decode(String.self, forKey: .os)) ?? ""
+        // lastSeen comes back as ISO 8601 string; Tailscale uses "0001-01-01T00:00:00Z"
+        // for "currently online" which decodes as distantPast.
+        if let s = try? c.decode(String.self, forKey: .lastSeen) {
+            let f = ISO8601DateFormatter()
+            let d = f.date(from: s)
+            // Treat the "zero date" sentinel as currently-online (no last seen).
+            if let d, d.timeIntervalSince1970 < 0 {
+                lastSeen = nil
+                online = true
+            } else {
+                lastSeen = d
+                // If lastSeen is within the last 5 minutes, treat as online.
+                online = (d.map { Date().timeIntervalSince($0) < 300 } ?? false)
+            }
+        } else {
+            lastSeen = nil
+            online = true
+        }
+    }
+
+    /// Best address to dial — prefer Tailscale IPv4 (100.x), fall back to
+    /// MagicDNS hostname, then any address. SSH on iOS works fine over
+    /// Tailscale's MagicDNS as long as the Tailscale app is installed +
+    /// signed in (it terminates connections at the kernel via NetworkExt).
+    var preferredAddress: String {
+        if let v4 = addresses.first(where: { $0.starts(with: "100.") }) { return v4 }
+        if !hostname.isEmpty { return hostname }
+        return addresses.first ?? name
+    }
+}
+
+/// Tailscale REST API client. PAT-based auth (Personal Access Token from
+/// admin console → Settings → Keys). Token is stored in Keychain — no
+/// disk-resident token. Tailnet name is a string like "tail-1234.ts.net"
+/// or the user's email-derived org; we accept "-" as the magic alias for
+/// "the tailnet of whoever owns this token".
+@MainActor
+final class TailscaleManager: ObservableObject {
+    static let shared = TailscaleManager()
+
+    @Published private(set) var devices: [TailscaleDevice] = []
+    @Published private(set) var lastError: String?
+    @Published private(set) var isLoading: Bool = false
+    /// User-visible "configured" flag. False = no token stored = section
+    /// hidden in the connection list.
+    @Published private(set) var isConfigured: Bool = false
+
+    private let tokenAccount = "tailscale-pat"
+    private let tailnetKey = "tailscale.tailnet"
+    private let usernameKey = "tailscale.defaultUsername"
+    private let session: URLSession
+    private let tsLogger = Logger(subsystem: "com.geistty", category: "Tailscale")
+
+    private init() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        self.session = URLSession(configuration: config)
+        self.isConfigured = (try? KeychainManager.shared.getTailscaleToken()) != nil
+    }
+
+    /// Default tailnet name. "-" is Tailscale's API alias meaning "the
+    /// default tailnet of the authenticated user". Override via setTailnet().
+    var tailnet: String {
+        UserDefaults.standard.string(forKey: tailnetKey) ?? "-"
+    }
+
+    /// Default SSH username to connect with when the user taps a device.
+    /// Defaults to the iOS login name (which usually matches their dev
+    /// username on Linux boxes). Override via setUsername().
+    var defaultUsername: String {
+        UserDefaults.standard.string(forKey: usernameKey) ?? NSUserName()
+    }
+
+    func setToken(_ token: String) throws {
+        if token.isEmpty {
+            try? KeychainManager.shared.deleteTailscaleToken()
+            isConfigured = false
+            devices = []
+        } else {
+            try KeychainManager.shared.saveTailscaleToken(token)
+            isConfigured = true
+        }
+    }
+
+    func setTailnet(_ name: String) {
+        UserDefaults.standard.set(name.isEmpty ? "-" : name, forKey: tailnetKey)
+    }
+
+    func setUsername(_ name: String) {
+        UserDefaults.standard.set(name, forKey: usernameKey)
+    }
+
+    /// Refresh the device list. Idempotent + safe to call repeatedly.
+    /// Updates `devices` on success or sets `lastError` on failure.
+    func refresh() async {
+        guard let token = try? KeychainManager.shared.getTailscaleToken(), !token.isEmpty else {
+            lastError = "No Tailscale token configured"
+            isConfigured = false
+            return
+        }
+        isConfigured = true
+        isLoading = true
+        defer { isLoading = false }
+
+        var components = URLComponents(string: "https://api.tailscale.com")!
+        components.path = "/api/v2/tailnet/\(tailnet)/devices"
+        guard let url = components.url else {
+            lastError = "Invalid tailnet name"
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                lastError = "Invalid response from Tailscale"
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                lastError = "Tailscale API \(http.statusCode): \(body.prefix(200))"
+                tsLogger.warning("Tailscale refresh failed: \(http.statusCode)")
+                return
+            }
+            // Response shape: { "devices": [ { ... }, ... ] }
+            struct Response: Decodable { let devices: [TailscaleDevice] }
+            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            // Sort: online first, then alphabetically by name.
+            self.devices = decoded.devices.sorted { lhs, rhs in
+                if lhs.online != rhs.online { return lhs.online }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            self.lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+            logger.warning("Tailscale refresh exception: \(error.localizedDescription)")
+        }
+    }
+
+    /// Build a one-shot ConnectionProfile from a Tailscale device, ready
+    /// to hand to ContentView.reconnectLast(). Not persisted — Tailscale
+    /// devices are discovered fresh each time.
+    func ephemeralProfile(for device: TailscaleDevice) -> ConnectionProfile {
+        var p = ConnectionProfile(
+            name: device.name,
+            host: device.preferredAddress,
+            port: 22,
+            username: defaultUsername,
+            authMethod: .sshKey,
+            sshKeyName: nil,
+            useTmux: false,
+            tmuxSessionName: nil
+        )
+        // Mark with a tag so the UI can show these are tailnet devices,
+        // not saved profiles.
+        p.colorTag = "blue"
+        p.folder = "Tailscale"
+        return p
+    }
+}
+
+// MARK: - KeychainManager Tailscale token helpers
+//
+// Tiny extension so the Tailscale token lives next to host keys / SSH
+// keys in the same keychain service, with the same accessibility class
+// (kSecAttrAccessibleWhenUnlockedThisDeviceOnly — no iCloud).
+
+extension KeychainManager {
+    private var tailscaleTokenAccount: String { "tailscale-pat" }
+    private var tailscaleService: String { "com.geistty" }
+
+    func saveTailscaleToken(_ token: String) throws {
+        guard let data = token.data(using: .utf8) else {
+            throw KeychainError.dataConversionError
+        }
+        try? deleteTailscaleToken()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tailscaleService,
+            kSecAttrAccount as String: tailscaleTokenAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+    }
+
+    func getTailscaleToken() throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tailscaleService,
+            kSecAttrAccount as String: tailscaleTokenAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else {
+            if status == errSecItemNotFound { throw KeychainError.itemNotFound }
+            throw KeychainError.unexpectedStatus(status)
+        }
+        guard let data = result as? Data, let s = String(data: data, encoding: .utf8) else {
+            throw KeychainError.dataConversionError
+        }
+        return s
+    }
+
+    func deleteTailscaleToken() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tailscaleService,
+            kSecAttrAccount as String: tailscaleTokenAccount,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+    }
+}
