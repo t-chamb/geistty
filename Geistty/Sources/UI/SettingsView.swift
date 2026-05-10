@@ -260,6 +260,21 @@ struct SettingsView: View {
                     .accessibilityIdentifier("SnippetsLink")
                 }
 
+                // Known Hosts — review TOFU-trusted host keys, revoke any
+                // that look wrong (e.g. server reinstall, MITM concern).
+                Section {
+                    NavigationLink {
+                        KnownHostsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "lock.shield")
+                                .foregroundStyle(.blue)
+                            Text("Known Hosts")
+                        }
+                    }
+                    .accessibilityIdentifier("KnownHostsLink")
+                }
+
                 // Keyboard Shortcuts — surfaces the hardware-keyboard
                 // bindings (showQuickConnect, showSettings, etc.) that the
                 // notification handlers expose. Without this link, iPad
@@ -1173,6 +1188,150 @@ struct SnippetEditorView: View {
         s.symbol = symbol
         onSave(s)
         dismiss()
+    }
+}
+
+// MARK: - Known Hosts
+
+/// Lists every TOFU-trusted SSH host key the app has stored. Lets the user
+/// review what they've trusted and revoke any that look wrong (e.g. after
+/// a server reinstall, when MITM is suspected, or when they want to force
+/// re-prompting on next connect).
+///
+/// Backed by KeychainManager.listHostKeys() which scans every keychain
+/// entry under com.geistty service for the `host-key:<host>:<port>` account
+/// pattern. Items are sorted alphabetically by host.
+struct KnownHostsView: View {
+    @State private var entries: [KeychainManager.HostKeyEntry] = []
+    @State private var selected: KeychainManager.HostKeyEntry?
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            if entries.isEmpty {
+                ContentUnavailableView(
+                    "No Trusted Hosts",
+                    systemImage: "lock.shield",
+                    description: Text("Hosts are added here automatically when you connect to them for the first time and accept their key.")
+                )
+            } else {
+                ForEach(filtered) { entry in
+                    Button {
+                        selected = entry
+                    } label: {
+                        HStack {
+                            Image(systemName: "server.rack")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(displayHost(entry))
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                Text(entry.fingerprint)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            revoke(entry)
+                        } label: {
+                            Label("Revoke", systemImage: "trash")
+                        }
+                    }
+                    .accessibilityIdentifier("KnownHostRow-\(entry.host)-\(entry.port)")
+                }
+            }
+        }
+        .navigationTitle("Known Hosts")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Search hosts")
+        .onAppear { reload() }
+        .sheet(item: $selected) { entry in
+            NavigationStack { KnownHostDetailView(entry: entry, onRevoke: {
+                revoke(entry)
+                selected = nil
+            }) }
+        }
+    }
+
+    private var filtered: [KeychainManager.HostKeyEntry] {
+        guard !query.isEmpty else { return entries }
+        let q = query.lowercased()
+        return entries.filter {
+            $0.host.lowercased().contains(q) ||
+            $0.publicKey.lowercased().contains(q)
+        }
+    }
+
+    private func displayHost(_ entry: KeychainManager.HostKeyEntry) -> String {
+        entry.port == 22 ? entry.host : "\(entry.host):\(entry.port)"
+    }
+
+    private func reload() {
+        entries = KeychainManager.shared.listHostKeys()
+    }
+
+    private func revoke(_ entry: KeychainManager.HostKeyEntry) {
+        try? KeychainManager.shared.deleteHostKey(for: entry.host, port: entry.port)
+        reload()
+    }
+}
+
+/// Detail sheet for a single trusted host. Shows the full key, the
+/// fingerprint, copy + revoke actions. Modal so the user has to make
+/// an explicit decision rather than tapping Revoke from the list and
+/// realizing they hit the wrong row.
+struct KnownHostDetailView: View {
+    let entry: KeychainManager.HostKeyEntry
+    let onRevoke: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            Section("Host") {
+                LabeledContent("Address", value: entry.host)
+                LabeledContent("Port", value: "\(entry.port)")
+            }
+            Section {
+                Text(entry.publicKey)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+            } header: {
+                Text("Public Key")
+            } footer: {
+                Text("This is the key the remote presented and you trusted on first connect. If the host key changes unexpectedly, revoke this entry — Geistty will prompt you to verify on the next connection.")
+            }
+            Section {
+                Button {
+                    UIPasteboard.general.string = entry.publicKey
+                } label: {
+                    Label("Copy Public Key", systemImage: "doc.on.doc")
+                }
+                .accessibilityIdentifier("KnownHostCopyButton")
+
+                Button(role: .destructive) {
+                    onRevoke()
+                } label: {
+                    Label("Revoke Trust", systemImage: "trash")
+                }
+                .accessibilityIdentifier("KnownHostRevokeButton")
+            }
+        }
+        .navigationTitle(entry.host)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 }
 
