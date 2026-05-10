@@ -72,8 +72,25 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var createdAt: Date
     var lastConnectedAt: Date?
     var isFavorite: Bool
-    var colorTag: String?  // For visual organization
-    
+    var colorTag: String?  // For visual organization (one of ConnectionProfile.allColorTags or nil)
+
+    // Organization
+    /// Folder name for grouping in the connection list. nil = "Uncategorized".
+    /// Free-form string entered by the user; matched case-insensitively for grouping.
+    var folder: String?
+
+    // SSH options
+    /// Forward the local SSH agent socket to the remote so things like
+    /// `git push` from the remote use this app's keys without copying them.
+    /// Off by default — opt-in for security.
+    var forwardAgent: Bool
+
+    /// Stable list of color tag identifiers. Used by the Color Tag picker
+    /// in ConnectionEditorView and the row chip in ConnectionListView.
+    static let allColorTags: [String] = [
+        "red", "orange", "yellow", "green", "blue", "purple", "pink", "gray",
+    ]
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -100,15 +117,18 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         self.lastConnectedAt = nil
         self.isFavorite = false
         self.colorTag = nil
+        self.folder = nil
+        self.forwardAgent = false
     }
-    
-    // Custom coding keys to handle migration from old profiles without tmux/filesIntegration fields
+
+    // Custom coding keys to handle migration from old profiles missing newer fields.
     enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, authMethod, sshKeyName
         case useTmux, tmuxSessionName, enableFilesIntegration
         case createdAt, lastConnectedAt, isFavorite, colorTag
+        case folder, forwardAgent
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -126,6 +146,8 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
         isFavorite = try container.decode(Bool.self, forKey: .isFavorite)
         colorTag = try container.decodeIfPresent(String.self, forKey: .colorTag)
+        folder = try container.decodeIfPresent(String.self, forKey: .folder)
+        forwardAgent = try container.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
     }
     
     /// Display string for the connection
@@ -305,8 +327,43 @@ class ConnectionProfileManager: ObservableObject {
         return profiles.filter {
             $0.name.lowercased().contains(lowercased) ||
             $0.host.lowercased().contains(lowercased) ||
-            $0.username.lowercased().contains(lowercased)
+            $0.username.lowercased().contains(lowercased) ||
+            ($0.folder?.lowercased().contains(lowercased) ?? false)
         }
+    }
+
+    /// Sorted list of distinct folder names across all non-favorite profiles.
+    /// Used to populate the editor's Folder picker (existing folders).
+    var folderNames: [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for p in profiles {
+            guard let f = p.folder, !f.isEmpty else { continue }
+            let key = f.lowercased()
+            if !seen.contains(key) {
+                seen.insert(key)
+                result.append(f)
+            }
+        }
+        return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Group non-favorite profiles by folder name. Folder == nil/"" lands in
+    /// the "Uncategorized" bucket, which sorts last. Favorites/recents are
+    /// excluded so the user doesn't see the same row twice.
+    var byFolder: [(folder: String, profiles: [ConnectionProfile])] {
+        var groups: [String: [ConnectionProfile]] = [:]
+        for p in profiles where !p.isFavorite {
+            let key = (p.folder?.isEmpty == false ? p.folder! : "Uncategorized")
+            groups[key, default: []].append(p)
+        }
+        // Sort: real folders alphabetically, "Uncategorized" pinned last.
+        return groups.map { (folder: $0.key, profiles: $0.value.sorted { $0.name < $1.name }) }
+            .sorted { a, b in
+                if a.folder == "Uncategorized" { return false }
+                if b.folder == "Uncategorized" { return true }
+                return a.folder.localizedStandardCompare(b.folder) == .orderedAscending
+            }
     }
     
     // MARK: - Persistence

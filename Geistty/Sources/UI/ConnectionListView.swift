@@ -82,15 +82,22 @@ struct ConnectionListView: View {
                     }
                 }
                 
-                // All Connections Section
-                Section("All Connections") {
-                    if filteredProfiles.isEmpty {
+                // All Connections Section — grouped by folder when the user
+                // has organized connections. Falls back to a single flat
+                // section labeled "All Connections" when no folders are set,
+                // preserving the prior behavior for users who don't use
+                // folders. While searching, we also show a flat list since
+                // grouping by folder would be confusing for filtered results.
+                if filteredProfiles.isEmpty {
+                    Section("All Connections") {
                         ContentUnavailableView(
                             "No Connections",
                             systemImage: "server.rack",
                             description: Text("Tap + to add a new connection")
                         )
-                    } else {
+                    }
+                } else if !searchText.isEmpty || !profileManager.profiles.contains(where: { $0.folder?.isEmpty == false }) {
+                    Section("All Connections") {
                         ForEach(filteredProfiles) { profile in
                             ConnectionRow(
                                 profile: profile,
@@ -104,6 +111,32 @@ struct ConnectionListView: View {
                         }
                         .onDelete { offsets in
                             deleteProfiles(from: filteredProfiles, at: offsets)
+                        }
+                    }
+                } else {
+                    ForEach(profileManager.byFolder, id: \.folder) { group in
+                        // Filter out favorites (they're in the Favorites
+                        // section above) and respect search.
+                        let visible = group.profiles.filter { p in
+                            !p.isFavorite && filteredProfiles.contains(where: { $0.id == p.id })
+                        }
+                        if !visible.isEmpty {
+                            Section(group.folder) {
+                                ForEach(visible) { profile in
+                                    ConnectionRow(
+                                        profile: profile,
+                                        isConnecting: connectionInProgress?.id == profile.id
+                                    ) {
+                                        connect(to: profile)
+                                    }
+                                    .contextMenu {
+                                        connectionContextMenu(for: profile)
+                                    }
+                                }
+                                .onDelete { offsets in
+                                    deleteProfiles(from: visible, at: offsets)
+                                }
+                            }
                         }
                     }
                 }
@@ -377,11 +410,21 @@ struct ConnectionRow: View {
     var body: some View {
         Button(action: onTap) {
             HStack {
+                // Color tag chip — visible only when set, slim vertical bar
+                // on the leading edge so the row layout is unchanged for
+                // unlabeled connections.
+                if let tag = profile.colorTag {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(ConnectionEditorView.colorForTag(tag))
+                        .frame(width: 4, height: 32)
+                        .accessibilityLabel("Color tag \(tag)")
+                }
+
                 // Auth method icon
                 Image(systemName: profile.authIcon)
                     .foregroundColor(.accentColor)
                     .frame(width: 24)
-                
+
                 VStack(alignment: .leading) {
                     Text(profile.name)
                         .font(.headline)
@@ -389,9 +432,18 @@ struct ConnectionRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                
+
                 Spacer()
-                
+
+                // Trailing badges, ordered: agent-forward indicator,
+                // favorite star, connecting spinner.
+                if profile.forwardAgent {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.secondary)
+                        .font(.caption2)
+                        .accessibilityLabel("Agent forwarding enabled")
+                }
+
                 if isConnecting {
                     ProgressView()
                 } else if profile.isFavorite {

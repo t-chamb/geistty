@@ -32,6 +32,15 @@ struct ConnectionEditorView: View {
     /// existing profile already has tmux on so users don't lose visibility
     /// of their current setting.
     @State private var tmuxSectionExpanded = false
+
+    // Organization
+    @State private var folder: String = ""
+    @State private var colorTag: String? = nil
+
+    // SSH options
+    @State private var forwardAgent: Bool = false
+
+    @ObservedObject private var profileManager = ConnectionProfileManager.shared
     
     // Key import
     @State private var showingKeyImport = false
@@ -198,7 +207,78 @@ struct ConnectionEditorView: View {
                 Toggle("Add to Favorites", isOn: $isFavorite)
                     .accessibilityIdentifier("FavoriteToggle")
             }
-            
+
+            // Organization — folder grouping + color label. Lets users with
+            // 30+ servers visually scan the connection list.
+            Section {
+                // Folder: text field with autocomplete from existing folders
+                // via a Menu picker. Empty string == Uncategorized.
+                HStack {
+                    TextField("Folder (optional)", text: $folder)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("FolderField")
+                    if !profileManager.folderNames.isEmpty {
+                        Menu {
+                            ForEach(profileManager.folderNames, id: \.self) { existing in
+                                Button(existing) { folder = existing }
+                            }
+                            Divider()
+                            Button("Clear") { folder = "" }
+                        } label: {
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("FolderPicker")
+                    }
+                }
+
+                // Color label — small swatches; tap one to set, tap again to clear.
+                HStack {
+                    Text("Color")
+                    Spacer()
+                    HStack(spacing: 6) {
+                        ForEach(ConnectionProfile.allColorTags, id: \.self) { tag in
+                            Button {
+                                colorTag = (colorTag == tag) ? nil : tag
+                            } label: {
+                                Circle()
+                                    .fill(colorForTag(tag))
+                                    .frame(width: 20, height: 20)
+                                    .overlay {
+                                        if colorTag == tag {
+                                            Image(systemName: "checkmark")
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Color \(tag)")
+                            .accessibilityIdentifier("ColorTag-\(tag)")
+                        }
+                    }
+                }
+            } header: {
+                Text("Organization")
+            } footer: {
+                Text("Folder groups connections in the list. Color is shown as a chip on each row.")
+            }
+
+            // SSH options — opt-in security knobs. Agent forwarding is the
+            // schema/UI half; the SwiftNIO-SSH channel-handler half (in-process
+            // SSH agent that signs from this app's keys) is planned for a
+            // follow-up. Field is persisted on the profile so when the
+            // implementation lands, the user-set preference is preserved.
+            Section {
+                Toggle("Forward SSH Agent", isOn: $forwardAgent)
+                    .accessibilityIdentifier("ForwardAgentToggle")
+            } header: {
+                Text("SSH Options")
+            } footer: {
+                Text("Planned — preference is saved with the profile. When implemented, the remote will be able to use this app's SSH keys (e.g. for `git push`) without copying them. Only enable for trusted hosts.")
+            }
+
             // tmux Integration — collapsed by default. Most users never use
             // tmux; surfacing the toggle inline competed with the more
             // common Favorite toggle above.
@@ -272,6 +352,23 @@ struct ConnectionEditorView: View {
         }
     }
     
+    /// Map a stable color tag identifier to a SwiftUI Color. Centralized so
+    /// the editor swatches and the list-row chip use the same lookup.
+    static func colorForTag(_ tag: String) -> Color {
+        switch tag {
+        case "red": return .red
+        case "orange": return .orange
+        case "yellow": return .yellow
+        case "green": return .green
+        case "blue": return .blue
+        case "purple": return .purple
+        case "pink": return .pink
+        case "gray": return .gray
+        default: return .secondary
+        }
+    }
+    private func colorForTag(_ tag: String) -> Color { Self.colorForTag(tag) }
+
     private var isValid: Bool {
         validationMessage == nil
     }
@@ -341,6 +438,9 @@ struct ConnectionEditorView: View {
         // Auto-expand the Advanced/tmux disclosure if this profile already
         // uses tmux, so the user sees their existing setting on entry.
         tmuxSectionExpanded = profile.useTmux
+        folder = profile.folder ?? ""
+        colorTag = profile.colorTag
+        forwardAgent = profile.forwardAgent
         // Load saved password from keychain if using password auth
         if profile.authMethod == .password {
             if let savedPassword = try? KeychainManager.shared.getPassword(
@@ -367,12 +467,14 @@ struct ConnectionEditorView: View {
         )
         
         newProfile.isFavorite = isFavorite
-        
+        newProfile.folder = folder.trimmingCharacters(in: .whitespaces).isEmpty ? nil : folder
+        newProfile.colorTag = colorTag
+        newProfile.forwardAgent = forwardAgent
+
         // Preserve existing metadata if editing
         if let existing = profile {
             newProfile.createdAt = existing.createdAt
             newProfile.lastConnectedAt = existing.lastConnectedAt
-            newProfile.colorTag = existing.colorTag
         }
         
         // Save password to keychain when using password auth
