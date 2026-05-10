@@ -496,3 +496,205 @@ class ConnectionProfileManager: ObservableObject {
     // See FILE_PROVIDER_LEARNINGS.md and branch archive/file-provider-jan-2026
     // The enableFilesIntegration property on ConnectionProfile is retained but unused.
 }
+
+// MARK: - Snippets
+
+/// A reusable shell command or text snippet. Lives next to ConnectionProfile
+/// because it follows the same persistence pattern (UserDefaults + iCloud
+/// key-value sync) and the same lifecycle. Termius/Blink call these
+/// "snippets" or "saved commands" — quick-paste shortcuts for things you
+/// type often (e.g. `kubectl get pods -A`, `journalctl -fu nginx`).
+struct Snippet: Identifiable, Codable, Hashable {
+    let id: UUID
+    var name: String
+    /// The text that gets sent. May contain newlines — they're sent
+    /// verbatim, so a snippet ending in `\n` will press Return on the
+    /// remote shell.
+    var content: String
+    /// Optional category for grouping in the Snippets list (e.g. "git",
+    /// "kubernetes", "debug"). nil = "Uncategorized".
+    var category: String?
+    /// SF Symbol name for the row icon. Defaults to "text.cursor".
+    var symbol: String
+    var createdAt: Date
+    var lastUsedAt: Date?
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        content: String,
+        category: String? = nil,
+        symbol: String = "text.cursor"
+    ) {
+        self.id = id
+        self.name = name
+        self.content = content
+        self.category = category
+        self.symbol = symbol
+        self.createdAt = Date()
+        self.lastUsedAt = nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, content, category, symbol, createdAt, lastUsedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        content = try c.decode(String.self, forKey: .content)
+        category = try c.decodeIfPresent(String.self, forKey: .category)
+        symbol = try c.decodeIfPresent(String.self, forKey: .symbol) ?? "text.cursor"
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lastUsedAt = try c.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+    }
+}
+
+/// Persisted snippet store. Mirrors ConnectionProfileManager's pattern:
+/// UserDefaults-backed local store + NSUbiquitousKeyValueStore iCloud
+/// sync (when enabled). Singleton so the SettingsView and any future
+/// terminal-side snippet picker share the same observable list.
+@MainActor
+final class SnippetManager: ObservableObject {
+    static let shared = SnippetManager()
+
+    @Published var snippets: [Snippet] = []
+
+    private let localKey = "snippets_v1"
+    private let iCloudStore = NSUbiquitousKeyValueStore.default
+
+    private init() {
+        loadLocal()
+        // Pull any iCloud-synced snippets after local load so iCloud wins
+        // for newer items (lastUsedAt-based merge mirrors profile sync).
+        mergeFromiCloud()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(iCloudDidChange(_:)),
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: iCloudStore
+        )
+        iCloudStore.synchronize()
+    }
+
+    // MARK: - Mutations
+
+    func add(_ s: Snippet) {
+        snippets.append(s)
+        sortInPlace()
+        save()
+    }
+
+    func update(_ s: Snippet) {
+        if let i = snippets.firstIndex(where: { $0.id == s.id }) {
+            snippets[i] = s
+            sortInPlace()
+            save()
+        }
+    }
+
+    func delete(_ s: Snippet) {
+        snippets.removeAll { $0.id == s.id }
+        save()
+    }
+
+    func delete(at offsets: IndexSet) {
+        snippets.remove(atOffsets: offsets)
+        save()
+    }
+
+    /// Mark a snippet as recently used. Called by the snippet picker
+    /// when content is copied or sent so the most-recent items can sort
+    /// to the top in the future (parallel to ConnectionProfile recents).
+    func markUsed(_ s: Snippet) {
+        guard let i = snippets.firstIndex(where: { $0.id == s.id }) else { return }
+        snippets[i].lastUsedAt = Date()
+        save()
+    }
+
+    // MARK: - Queries
+
+    func search(_ query: String) -> [Snippet] {
+        guard !query.isEmpty else { return snippets }
+        let q = query.lowercased()
+        return snippets.filter {
+            $0.name.lowercased().contains(q) ||
+            $0.content.lowercased().contains(q) ||
+            ($0.category?.lowercased().contains(q) ?? false)
+        }
+    }
+
+    /// Distinct category names used by the editor's category picker
+    /// (autocomplete from prior entries).
+    var categoryNames: [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for s in snippets {
+            guard let c = s.category, !c.isEmpty else { continue }
+            let key = c.lowercased()
+            if !seen.contains(key) { seen.insert(key); result.append(c) }
+        }
+        return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Group snippets by category. Same shape as ConnectionProfileManager.byFolder.
+    var byCategory: [(category: String, snippets: [Snippet])] {
+        var groups: [String: [Snippet]] = [:]
+        for s in snippets {
+            let key = (s.category?.isEmpty == false ? s.category! : "Uncategorized")
+            groups[key, default: []].append(s)
+        }
+        return groups.map { (category: $0.key, snippets: $0.value) }
+            .sorted { a, b in
+                if a.category == "Uncategorized" { return false }
+                if b.category == "Uncategorized" { return true }
+                return a.category.localizedStandardCompare(b.category) == .orderedAscending
+            }
+    }
+
+    // MARK: - Persistence
+
+    private func sortInPlace() {
+        snippets.sort {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(snippets) else { return }
+        UserDefaults.standard.set(data, forKey: localKey)
+        iCloudStore.set(data, forKey: localKey)
+    }
+
+    private func loadLocal() {
+        guard let data = UserDefaults.standard.data(forKey: localKey),
+              let decoded = try? JSONDecoder().decode([Snippet].self, from: data)
+        else { return }
+        snippets = decoded
+        sortInPlace()
+    }
+
+    private func mergeFromiCloud() {
+        guard let data = iCloudStore.data(forKey: localKey),
+              let cloud = try? JSONDecoder().decode([Snippet].self, from: data)
+        else { return }
+        var merged = snippets
+        for c in cloud {
+            if let i = merged.firstIndex(where: { $0.id == c.id }) {
+                let local = merged[i]
+                let localDate = local.lastUsedAt ?? local.createdAt
+                let cloudDate = c.lastUsedAt ?? c.createdAt
+                if cloudDate > localDate { merged[i] = c }
+            } else {
+                merged.append(c)
+            }
+        }
+        snippets = merged
+        sortInPlace()
+    }
+
+    @objc private func iCloudDidChange(_ note: Notification) {
+        Task { @MainActor in self.mergeFromiCloud() }
+    }
+}

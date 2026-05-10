@@ -244,6 +244,22 @@ struct SettingsView: View {
                     Text("Advanced: Edit the Ghostty config file directly. Changes apply on next connection.")
                 }
                 
+                // Snippets — saved commands / text shortcuts. Quick-paste
+                // surface for things you type often (kubectl/journalctl
+                // incantations, git workflows, etc.).
+                Section {
+                    NavigationLink {
+                        SnippetsView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "text.cursor")
+                                .foregroundStyle(.blue)
+                            Text("Snippets")
+                        }
+                    }
+                    .accessibilityIdentifier("SnippetsLink")
+                }
+
                 // Keyboard Shortcuts — surfaces the hardware-keyboard
                 // bindings (showQuickConnect, showSettings, etc.) that the
                 // notification handlers expose. Without this link, iPad
@@ -923,6 +939,240 @@ struct KeyboardShortcutsView: View {
         }
         .navigationTitle("Keyboard Shortcuts")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Snippets
+
+/// CRUD view for the SnippetManager singleton. Sectioned by category, with
+/// search at the top and an Add button in the toolbar. Tapping a row opens
+/// the editor; long-press / swipe gives delete + copy actions. Sending to
+/// an active terminal session (when one exists) is a follow-up — the copy
+/// button + standard iOS paste covers the immediate use case.
+struct SnippetsView: View {
+    @ObservedObject private var snippetManager = SnippetManager.shared
+    @State private var query = ""
+    @State private var showingEditor = false
+    @State private var editingSnippet: Snippet?
+
+    var body: some View {
+        List {
+            if snippetManager.snippets.isEmpty {
+                ContentUnavailableView(
+                    "No Snippets Yet",
+                    systemImage: "text.cursor",
+                    description: Text("Tap + to save a command or text snippet for quick reuse.")
+                )
+            } else {
+                let groups = filteredGrouped
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    Section(group.category) {
+                        ForEach(group.snippets) { s in
+                            snippetRow(s)
+                        }
+                        .onDelete { offsets in
+                            for i in offsets { snippetManager.delete(group.snippets[i]) }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Snippets")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Search snippets")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    editingSnippet = nil
+                    showingEditor = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityIdentifier("SnippetAddButton")
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            NavigationStack {
+                SnippetEditorView(snippet: editingSnippet) { saved in
+                    if editingSnippet == nil {
+                        snippetManager.add(saved)
+                    } else {
+                        snippetManager.update(saved)
+                    }
+                }
+            }
+        }
+    }
+
+    private var filteredGrouped: [(category: String, snippets: [Snippet])] {
+        let filter: (Snippet) -> Bool = { s in
+            query.isEmpty
+                || s.name.localizedCaseInsensitiveContains(query)
+                || s.content.localizedCaseInsensitiveContains(query)
+                || (s.category?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+        return snippetManager.byCategory.compactMap { group in
+            let visible = group.snippets.filter(filter)
+            return visible.isEmpty ? nil : (group.category, visible)
+        }
+    }
+
+    @ViewBuilder
+    private func snippetRow(_ s: Snippet) -> some View {
+        Button {
+            editingSnippet = s
+            showingEditor = true
+        } label: {
+            HStack {
+                Image(systemName: s.symbol)
+                    .foregroundStyle(.blue)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(s.name)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Text(s.content.replacingOccurrences(of: "\n", with: " ⏎ "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .leading) {
+            Button {
+                UIPasteboard.general.string = s.content
+                snippetManager.markUsed(s)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .tint(.blue)
+        }
+        .accessibilityIdentifier("SnippetRow-\(s.name)")
+    }
+}
+
+/// Editor for a single Snippet — handles both create (snippet == nil) and
+/// edit. Mirrors ConnectionEditorView's autocomplete pattern: the Category
+/// field has a Menu picker populated from existing categories so the user
+/// doesn't proliferate near-duplicates ("git" vs "Git" vs "git ").
+struct SnippetEditorView: View {
+    let snippet: Snippet?
+    let onSave: (Snippet) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var snippetManager = SnippetManager.shared
+
+    @State private var name: String = ""
+    @State private var content: String = ""
+    @State private var category: String = ""
+    @State private var symbol: String = "text.cursor"
+
+    private let symbolChoices = [
+        "text.cursor", "terminal", "command", "wand.and.stars",
+        "arrow.right", "play.fill", "wrench.and.screwdriver", "hammer",
+        "doc.on.doc", "key.horizontal", "lock", "network",
+        "ellipsis.curlybraces", "chevron.left.forwardslash.chevron.right",
+    ]
+
+    var body: some View {
+        Form {
+            Section("Snippet") {
+                TextField("Name", text: $name)
+                    .textInputAutocapitalization(.sentences)
+                    .accessibilityIdentifier("SnippetNameField")
+
+                HStack {
+                    TextField("Category (optional)", text: $category)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("SnippetCategoryField")
+                    if !snippetManager.categoryNames.isEmpty {
+                        Menu {
+                            ForEach(snippetManager.categoryNames, id: \.self) { existing in
+                                Button(existing) { category = existing }
+                            }
+                            Divider()
+                            Button("Clear") { category = "" }
+                        } label: {
+                            Image(systemName: "tag.fill").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                TextEditor(text: $content)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 120)
+                    .accessibilityIdentifier("SnippetContentField")
+            } header: {
+                Text("Content")
+            } footer: {
+                Text("Newlines are sent verbatim — end with a Return to auto-execute.")
+                    .font(.caption)
+            }
+
+            Section("Icon") {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(symbolChoices, id: \.self) { sym in
+                            Button {
+                                symbol = sym
+                            } label: {
+                                Image(systemName: sym)
+                                    .font(.title3)
+                                    .frame(width: 36, height: 36)
+                                    .background(symbol == sym ? Color.accentColor.opacity(0.2) : Color.clear)
+                                    .foregroundStyle(symbol == sym ? Color.accentColor : .secondary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Icon \(sym)")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle(snippet == nil ? "New Snippet" : "Edit Snippet")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("SnippetCancelButton")
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { save() }
+                    .disabled(!isValid)
+                    .accessibilityIdentifier("SnippetSaveButton")
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !content.isEmpty
+    }
+
+    private func load() {
+        guard let s = snippet else { return }
+        name = s.name
+        content = s.content
+        category = s.category ?? ""
+        symbol = s.symbol
+    }
+
+    private func save() {
+        var s = snippet ?? Snippet(name: name, content: content)
+        s.name = name
+        s.content = content
+        s.category = category.trimmingCharacters(in: .whitespaces).isEmpty ? nil : category
+        s.symbol = symbol
+        onSave(s)
+        dismiss()
     }
 }
 
